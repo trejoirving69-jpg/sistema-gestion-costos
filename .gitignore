@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+
+startup.log
+startup_import_error.log
+
+dist/
+build/
+
+*.spec.bak
+
+.env
+.env.*
+
+
+# Bases de datos locales
+base de datos/gestion_sistema.db
+base de datos/data/chat_server.db
+
+# Archivos generados del chat
+base de datos/archivos_chat/
+

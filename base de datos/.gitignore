@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+
+startup.log
+startup_import_error.log
+
+dist/
+build/
+
+*.spec.bak
+
+.env
+.env.*
+

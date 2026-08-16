@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: sgc-chat-server
+    runtime: python
+    buildCommand: pip install -r requirements_server.txt
+    startCommand: waitress-serve --host=0.0.0.0 --port=$PORT server:app
+    envVars:
+      - key: CHAT_API_KEY
+        sync: false
+      - key: CHAT_DATA_DIR
+        value: /tmp/sgc-data
