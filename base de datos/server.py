@@ -138,12 +138,30 @@ def init_db():
             descripcion TEXT,
             correo TEXT,
             telefono TEXT,
-            estado TEXT NOT NULL DEFAULT 'Pendiente'
+            estado TEXT NOT NULL DEFAULT 'Pendiente',
+            actualizado_en TEXT,
+            procesado_por TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_solicitudes_web_estado
         ON solicitudes_web(estado, id);
     """)
+
+    # Migración para instalaciones que ya tenían solicitudes_web.
+    columnas_sol = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(solicitudes_web)").fetchall()
+    }
+
+    if "actualizado_en" not in columnas_sol:
+        conn.execute(
+            "ALTER TABLE solicitudes_web ADD COLUMN actualizado_en TEXT"
+        )
+
+    if "procesado_por" not in columnas_sol:
+        conn.execute(
+            "ALTER TABLE solicitudes_web ADD COLUMN procesado_por TEXT"
+        )
 
     conn.commit()
     conn.close()
@@ -958,7 +976,8 @@ def listar_solicitudes_web():
     if estado:
         rows = conn.execute("""
             SELECT id, fecha_solicitud, cliente_potencial, servicio_interes,
-                   descripcion, correo, telefono, estado
+                   descripcion, correo, telefono, estado,
+                   actualizado_en, procesado_por
             FROM solicitudes_web
             WHERE estado = ?
             ORDER BY id DESC
@@ -966,7 +985,8 @@ def listar_solicitudes_web():
     else:
         rows = conn.execute("""
             SELECT id, fecha_solicitud, cliente_potencial, servicio_interes,
-                   descripcion, correo, telefono, estado
+                   descripcion, correo, telefono, estado,
+                   actualizado_en, procesado_por
             FROM solicitudes_web
             ORDER BY id DESC
         """).fetchall()
@@ -979,21 +999,69 @@ def listar_solicitudes_web():
 def actualizar_solicitud_web(solicitud_id):
     data = request.get_json(silent=True) or {}
     estado = (data.get("estado") or "").strip()
+
     permitidos = {"Pendiente", "Contactado", "Aprobado", "Rechazado"}
     if estado not in permitidos:
         return jsonify({"ok": False, "error": "Estado inválido"}), 400
 
+    sesion = getattr(request, "chat_user", None)
+    usuario = "Sistema"
+    if sesion:
+        usuario = sesion.get("username") or "Sistema"
+
     conn = db()
+
+    actual = conn.execute(
+        "SELECT estado FROM solicitudes_web WHERE id=?",
+        (solicitud_id,)
+    ).fetchone()
+
+    if not actual:
+        conn.close()
+        return jsonify({"ok": False, "error": "Solicitud no encontrada"}), 404
+
+    estado_anterior = actual["estado"] or "Pendiente"
+
+    # Una solicitud finalizada no puede volver a procesarse.
+    if estado_anterior in {"Aprobado", "Rechazado"}:
+        conn.close()
+        return jsonify({
+            "ok": False,
+            "error": f"La solicitud ya fue {estado_anterior.lower()}"
+        }), 409
+
     cur = conn.execute(
-        "UPDATE solicitudes_web SET estado=? WHERE id=?",
-        (estado, solicitud_id)
+        """
+        UPDATE solicitudes_web
+        SET estado=?,
+            actualizado_en=CURRENT_TIMESTAMP,
+            procesado_por=?
+        WHERE id=?
+        """,
+        (estado, usuario, solicitud_id)
     )
+
     conn.commit()
     actualizado = cur.rowcount
+
+    fila = conn.execute(
+        """
+        SELECT id, estado, actualizado_en, procesado_por
+        FROM solicitudes_web
+        WHERE id=?
+        """,
+        (solicitud_id,)
+    ).fetchone()
+
     conn.close()
-    if not actualizado:
-        return jsonify({"ok": False, "error": "Solicitud no encontrada"}), 404
-    return jsonify({"ok": True, "id": solicitud_id, "estado": estado})
+
+    return jsonify({
+        "ok": True,
+        "id": solicitud_id,
+        "estado": estado,
+        "actualizado_en": fila["actualizado_en"] if fila else None,
+        "procesado_por": fila["procesado_por"] if fila else usuario
+    })
 
 
 # ============================================================
