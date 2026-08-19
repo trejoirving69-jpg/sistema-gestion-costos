@@ -12,10 +12,12 @@ from openpyxl import Workbook
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 import traceback
+import certifi
 
 # Importaciones desde conexion
 from conexion import obtener_conexion, registrar_accion, hash_password, generar_id_cliente, obtener_ruta_recurso 
 from chat_red import VentanaChat
+from chat_config import CHAT_SERVER_URL
 
 # Nuevas importaciones para la Etapa 10 (Gráficos integrados en Tkinter)
 import matplotlib
@@ -91,6 +93,9 @@ class DashboardSGC:
         
         self.ultimo_mensaje_notificado = 0
         self.notificaciones_chat = 0
+        self.solicitudes_token = None
+        self.ultima_solicitud_web_id = 0
+        self.monitor_solicitudes_activo = False
         self.iniciar_monitor_mensajes()
         self.configurar_interfaz()
 
@@ -243,6 +248,86 @@ class DashboardSGC:
 
     def actualizar_alertas_globales(self):
         self.notas_pendientes = 0
+        if not getattr(self, "monitor_solicitudes_activo", False):
+            self.monitor_solicitudes_activo = True
+            self.root.after(1500, self.monitor_solicitudes_web)
+
+    def _api_solicitudes(self, metodo, ruta, **kwargs):
+        """Cliente centralizado para solicitudes web alojadas en PythonAnywhere."""
+        if not CHAT_SERVER_URL.strip():
+            raise RuntimeError("CHAT_SERVER_URL no está configurado")
+
+        if not self.solicitudes_token:
+            usuario = getattr(self, "usuario_autenticado", None)
+            password = getattr(self, "password_autenticado", None)
+            if not usuario or not password:
+                raise RuntimeError("No hay credenciales de sesión disponibles")
+            login = requests.post(
+                f"{CHAT_SERVER_URL.rstrip('/')}/api/session",
+                json={"username": usuario, "password": password},
+                timeout=15,
+                verify=certifi.where(),
+            )
+            login.raise_for_status()
+            data_login = login.json()
+            if not data_login.get("ok"):
+                raise RuntimeError(data_login.get("error", "No se pudo iniciar sesión remota"))
+            self.solicitudes_token = data_login["token"]
+
+        headers = {"Authorization": f"Bearer {self.solicitudes_token}"}
+        respuesta = requests.request(
+            metodo,
+            f"{CHAT_SERVER_URL.rstrip('/')}{ruta}",
+            headers=headers,
+            timeout=15,
+            verify=certifi.where(),
+            **kwargs,
+        )
+        if respuesta.status_code == 401:
+            self.solicitudes_token = None
+            return self._api_solicitudes(metodo, ruta, **kwargs)
+        respuesta.raise_for_status()
+        data = respuesta.json()
+        if not data.get("ok"):
+            raise RuntimeError(data.get("error", "Error en API de solicitudes"))
+        return data
+
+    def monitor_solicitudes_web(self):
+        """Muestra una alerta estilo app cuando entra una nueva solicitud desde la web."""
+        try:
+            data = self._api_solicitudes("GET", "/api/solicitudes?estado=Pendiente")
+            items = data.get("items", [])
+            ids = [int(x.get("id", 0)) for x in items]
+            max_id = max(ids, default=0)
+            if self.ultima_solicitud_web_id == 0:
+                self.ultima_solicitud_web_id = max_id
+            else:
+                nuevas = [x for x in items if int(x.get("id", 0)) > self.ultima_solicitud_web_id]
+                for solicitud in sorted(nuevas, key=lambda x: int(x.get("id", 0))):
+                    self.mostrar_notificacion_solicitud(solicitud)
+                self.ultima_solicitud_web_id = max(self.ultima_solicitud_web_id, max_id)
+        except Exception as e:
+            print(f"Monitor solicitudes web: {e}")
+        try:
+            self.root.after(5000, self.monitor_solicitudes_web)
+        except Exception:
+            pass
+
+    def mostrar_notificacion_solicitud(self, solicitud):
+        n = tk.Toplevel(self.root)
+        n.title("Nueva solicitud web")
+        n.resizable(False, False)
+        n.configure(bg="white")
+        n.attributes("-topmost", True)
+        ancho, alto = 385, 180
+        n.update_idletasks()
+        sw, sh = n.winfo_screenwidth(), n.winfo_screenheight()
+        n.geometry(f"{ancho}x{alto}+{sw-ancho-25}+{max(20, sh-alto-70)}")
+        tk.Label(n, text="🔔  Nueva solicitud de asesoría", bg="white", fg=self.colores["sidebar"], font=("Arial", 13, "bold")).pack(anchor="w", padx=15, pady=(12, 3))
+        tk.Label(n, text=solicitud.get("cliente_potencial") or "Cliente", bg="white", fg="#222", font=("Arial", 10, "bold")).pack(anchor="w", padx=15)
+        tk.Label(n, text=solicitud.get("servicio_interes") or "Servicio no especificado", bg="white", fg="#666", font=("Arial", 9), wraplength=345, justify="left").pack(anchor="w", padx=15, pady=(2, 8))
+        tk.Button(n, text="Ver solicitud", bg=self.colores["sidebar"], fg="white", relief="flat", cursor="hand2", command=lambda: (n.destroy(), self.mostrar_notificaciones())).pack(anchor="e", padx=15, pady=(0, 10))
+        n.after(9000, lambda: n.destroy() if n.winfo_exists() else None)
     
     def mostrar_inicio(self):
         panel = self.crear_panel_principal("Panel de Control Ejecutivo")
@@ -1384,22 +1469,18 @@ class DashboardSGC:
         btn_rechazar.pack(side="left", padx=8)
 
         try:
-            conn = obtener_conexion()
-            cur = conn.cursor()
-            cur.execute("SELECT id, fecha_solicitud, cliente_potencial, servicio_interes, descripcion, correo, telefono, estado FROM solicitudes_web ORDER BY id DESC")
-            for fila in cur.fetchall():
-                fecha = f"ID Web: {fila[0]}"
-                cliente = fila[2] or 'No registrado'
-                servicio = fila[3] or 'No especificado'
-                descripcion = fila[4] or ''
-                correo = fila[5] or 'No registrado'
-                telefono = fila[6] or 'No registrado'
-                estado = fila[7] or 'Pendiente'
-
+            data = self._api_solicitudes("GET", "/api/solicitudes")
+            for fila in data.get("items", []):
+                fecha = f"ID Web: {fila.get('id')}"
+                cliente = fila.get('cliente_potencial') or 'No registrado'
+                servicio = fila.get('servicio_interes') or 'No especificado'
+                descripcion = fila.get('descripcion') or ''
+                correo = fila.get('correo') or 'No registrado'
+                telefono = fila.get('telefono') or 'No registrado'
+                estado = fila.get('estado') or 'Pendiente'
                 tabla_web.insert("", "end", values=(fecha, cliente, servicio, descripcion, estado, correo, telefono))
-            conn.close()
         except Exception as e:
-            tabla_web.insert("", "end", values=("Error", "Problema local DB", str(e), "", "", "", ""))
+            tabla_web.insert("", "end", values=("Error", "Servidor web", str(e), "", "", "", ""))
 
     def rechazar_solicitud(self, tabla):
         item_seleccionado = tabla.selection()
@@ -1416,11 +1497,11 @@ class DashboardSGC:
             return
 
         try:
-            conn = obtener_conexion()
-            cursor = conn.cursor()
-            cursor.execute("UPDATE solicitudes_web SET estado = 'Rechazado' WHERE id = ?", (int(id_web_real),))
-            conn.commit()
-            conn.close()
+            self._api_solicitudes(
+                "PATCH",
+                f"/api/solicitudes/{int(id_web_real)}",
+                json={"estado": "Rechazado"}
+            )
             messagebox.showinfo("Éxito", "Solicitud rechazada correctamente.")
             self.mostrar_notificaciones()
         except Exception as e:
@@ -1492,15 +1573,8 @@ class DashboardSGC:
 
         industrias = [
             "Industria manufacturera",
-            "Comercial / Retard",
-            "Servicios",
-            "Tecnología",
-            "Salud",
-            "Educación",
-            "Finanzas",
-            "Logística",
-            "Transporte",
-            "Alimentos"
+            "Comercial / Retail",
+            "Servicios"
         ]
 
         resultado = {"valor": None}
@@ -1546,14 +1620,20 @@ class DashboardSGC:
             conn_local = sqlite3.connect("gestion_sistema.db")
             cursor_local = conn_local.cursor()
 
-            cursor_local.execute("SELECT COUNT(*) FROM clientes")
-            contador = cursor_local.fetchone()[0] + 1
-            codigo_cliente = f"4-{contador:03d}"
+            codigo_cliente = generar_id_cliente(industria_cliente, conn_local)
+            nombre_contacto = simpledialog.askstring(
+                "Persona de contacto",
+                "Nombre de la persona de contacto del cliente:",
+                initialvalue=cliente_nombre
+            )
+            if not nombre_contacto:
+                conn_local.close()
+                return
 
             cursor_local.execute("""
-                INSERT INTO clientes (codigo, nombre, correo, telefono, industria, servicio, fecha_registro)
-                VALUES (?, ?, ?, ?, ?, ?, date('now'))
-            """, (codigo_cliente, cliente_nombre, correo_real, telefono_real, industria_cliente, servicio_interes))
+                INSERT INTO clientes (codigo, nombre, correo, telefono, industria, servicio, nombre_contacto, fecha_registro, estado)
+                VALUES (?, ?, ?, ?, ?, ?, ?, date('now'), 'Activo')
+            """, (codigo_cliente, cliente_nombre, correo_real, telefono_real, industria_cliente, servicio_interes, nombre_contacto))
             
             cliente_id = cursor_local.lastrowid
 
@@ -1577,16 +1657,12 @@ class DashboardSGC:
             conn_local.commit()
             conn_local.close()
 
-            # Marcar la solicitud web como Aprobado en la tabla local `solicitudes_web`
-            try:
-                conn_u = obtener_conexion()
-                cur_u = conn_u.cursor()
-                cur_u.execute("UPDATE solicitudes_web SET estado = 'Aprobado' WHERE id = ?", (int(id_web_real),))
-                conn_u.commit()
-                conn_u.close()
-            except Exception:
-                # No fatal: si no existe la tabla local, ignorar
-                pass
+            # Marcar la solicitud web como aprobada en el servidor central.
+            self._api_solicitudes(
+                "PATCH",
+                f"/api/solicitudes/{int(id_web_real)}",
+                json={"estado": "Aprobado"}
+            )
 
             usuario_actual = getattr(self, 'usuario_autenticado', 'Sistema')
             registrar_accion(usuario_actual, "APROBÓ SERVICIO WEB", f"Aprobó orden para {cliente_nombre}. Servicio: {servicio_interes}. Total: {total_bs:,.2f} Bs.")

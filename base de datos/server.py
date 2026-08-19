@@ -129,6 +129,20 @@ def init_db():
         CREATE INDEX IF NOT EXISTS
             idx_participantes_usuario
         ON participantes_chat(usuario_id, conversacion_id);
+
+        CREATE TABLE IF NOT EXISTS solicitudes_web (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha_solicitud TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            cliente_potencial TEXT NOT NULL,
+            servicio_interes TEXT,
+            descripcion TEXT,
+            correo TEXT,
+            telefono TEXT,
+            estado TEXT NOT NULL DEFAULT 'Pendiente'
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_solicitudes_web_estado
+        ON solicitudes_web(estado, id);
     """)
 
     conn.commit()
@@ -874,6 +888,112 @@ def notifications():
             for row in rows
         ]
     })
+
+
+# ============================================================
+# SOLICITUDES WEB (Landing Page -> Sistema de escritorio)
+# ============================================================
+
+def _cors_solicitudes(response):
+    """CORS temporal para la landing durante la fase de pruebas."""
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Chat-Key"
+    return response
+
+
+@app.route("/api/solicitudes", methods=["OPTIONS"])
+def solicitudes_options():
+    return _cors_solicitudes(jsonify({"ok": True}))
+
+
+@app.post("/api/solicitudes")
+def crear_solicitud_web():
+    """Endpoint público usado por el formulario del sitio web."""
+    data = request.get_json(silent=True) or request.form.to_dict() or {}
+
+    nombre = (data.get("nombre") or "").strip()
+    apellido = (data.get("apellido") or "").strip()
+    cliente = (data.get("cliente") or data.get("cliente_potencial") or f"{nombre} {apellido}").strip()
+    servicio = (data.get("servicio") or data.get("servicio_interes") or "").strip()
+    custom_servicio = (data.get("custom_servicio") or "").strip()
+    if servicio.lower() == "otro":
+        servicio = custom_servicio
+
+    descripcion = (data.get("descripcion_negocio") or data.get("descripcion") or data.get("mensaje") or "").strip()
+    correo = (data.get("correo") or data.get("email") or "").strip()
+    telefono = (data.get("telefono") or data.get("telefono_contacto") or "").strip()
+
+    if not cliente or not servicio or not descripcion or not correo or not telefono:
+        return _cors_solicitudes(jsonify({
+            "ok": False,
+            "status": "error",
+            "error": "Faltan datos obligatorios",
+            "message": "Completa nombre, servicio, descripción, correo y teléfono."
+        })), 400
+
+    conn = db()
+    cur = conn.execute("""
+        INSERT INTO solicitudes_web
+        (cliente_potencial, servicio_interes, descripcion, correo, telefono, estado)
+        VALUES (?, ?, ?, ?, ?, 'Pendiente')
+    """, (cliente, servicio, descripcion, correo, telefono))
+    conn.commit()
+    solicitud_id = cur.lastrowid
+    conn.close()
+
+    return _cors_solicitudes(jsonify({
+        "ok": True,
+        "status": "success",
+        "id": solicitud_id,
+        "message": "Solicitud recibida correctamente."
+    })), 201
+
+
+@app.get("/api/solicitudes")
+@require_auth
+def listar_solicitudes_web():
+    estado = (request.args.get("estado") or "").strip()
+    conn = db()
+    if estado:
+        rows = conn.execute("""
+            SELECT id, fecha_solicitud, cliente_potencial, servicio_interes,
+                   descripcion, correo, telefono, estado
+            FROM solicitudes_web
+            WHERE estado = ?
+            ORDER BY id DESC
+        """, (estado,)).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT id, fecha_solicitud, cliente_potencial, servicio_interes,
+                   descripcion, correo, telefono, estado
+            FROM solicitudes_web
+            ORDER BY id DESC
+        """).fetchall()
+    conn.close()
+    return jsonify({"ok": True, "items": [dict(r) for r in rows]})
+
+
+@app.patch("/api/solicitudes/<int:solicitud_id>")
+@require_auth
+def actualizar_solicitud_web(solicitud_id):
+    data = request.get_json(silent=True) or {}
+    estado = (data.get("estado") or "").strip()
+    permitidos = {"Pendiente", "Contactado", "Aprobado", "Rechazado"}
+    if estado not in permitidos:
+        return jsonify({"ok": False, "error": "Estado inválido"}), 400
+
+    conn = db()
+    cur = conn.execute(
+        "UPDATE solicitudes_web SET estado=? WHERE id=?",
+        (estado, solicitud_id)
+    )
+    conn.commit()
+    actualizado = cur.rowcount
+    conn.close()
+    if not actualizado:
+        return jsonify({"ok": False, "error": "Solicitud no encontrada"}), 404
+    return jsonify({"ok": True, "id": solicitud_id, "estado": estado})
 
 
 # ============================================================
