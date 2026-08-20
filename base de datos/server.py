@@ -268,7 +268,10 @@ def require_auth(fn):
                 "error": "Sesión no autorizada"
             }), 401
 
-        request.chat_user = sesion
+        # Flask permite adjuntar datos de sesión dinámicamente al request.
+        # setattr conserva ese comportamiento sin provocar un falso positivo
+        # del analizador estático sobre la clase Request.
+        setattr(request, "chat_user", sesion)
 
         return fn(*args, **kwargs)
 

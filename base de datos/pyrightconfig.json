@@ -1,0 +1,25 @@
+{
+  "include": [
+    "main.py",
+    "dashboard.py",
+    "login.py",
+    "conexion.py",
+    "config.py",
+    "chat.py",
+    "chat_config.py",
+    "chat_red.py",
+    "server.py",
+    "web_notifications.py"
+  ],
+  "exclude": [
+    ".venv",
+    "build",
+    "dist",
+    "__pycache__",
+    "server_backup_antes_limite24h_20260820_100626.py"
+  ],
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.13",
+  "venvPath": ".",
+  "venv": ".venv"
+}

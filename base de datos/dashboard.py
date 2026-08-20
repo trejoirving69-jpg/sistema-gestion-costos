@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 import re
 import datetime
 from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 import traceback
@@ -169,6 +170,15 @@ class DashboardSGC:
         self.ids_solicitudes_vistas = set()
         self.monitor_solicitudes_inicializado = False
         self.total_solicitudes_pendientes = 0
+
+        # Estado de sesión y referencias opcionales declaradas explícitamente.
+        # Esto conserva el comportamiento actual y permite al analizador
+        # estático conocer estos atributos desde la construcción del dashboard.
+        self.usuario_autenticado: str = ""
+        self.rol_autenticado: str = ""
+        self.password_autenticado: str | None = ""
+        self.ventana_chat: VentanaChat | None = None
+
         self.iniciar_monitor_mensajes()
         self.configurar_interfaz()
 
@@ -347,10 +357,10 @@ class DashboardSGC:
 
     def cerrar_ventana_chat(self):
 
-        if hasattr(self, "ventana_chat"):
-
+        ventana_chat = self.ventana_chat
+        if ventana_chat is not None:
             try:
-                self.ventana_chat.cerrar()
+                ventana_chat.cerrar()
             except Exception:
                 pass
 
@@ -496,7 +506,7 @@ class DashboardSGC:
             entrada.insert(0, valor_inicial)
             entrada.select_range(0, tk.END)
 
-        resultado = {"valor": None}
+        resultado: dict[str, str | None] = {"valor": None}
 
         def confirmar(event=None):
             valor = entrada.get().strip()
@@ -1525,11 +1535,26 @@ class DashboardSGC:
                 return
             wb = Workbook()
             ws = wb.active
+            assert ws is not None
             ws.title = 'Clientes'
-            columnas = self.tabla_clientes['columns']
+
+            columnas_raw = self.tabla_clientes['columns']
+            columnas = (
+                list(columnas_raw)
+                if isinstance(columnas_raw, (tuple, list))
+                else [columnas_raw]
+            )
             ws.append(columnas)
+
             for item in self.tabla_clientes.get_children():
-                ws.append(self.tabla_clientes.item(item, 'values'))
+                valores_raw = self.tabla_clientes.item(item, 'values')
+                valores = (
+                    list(valores_raw)
+                    if isinstance(valores_raw, (tuple, list))
+                    else [valores_raw]
+                )
+                ws.append(valores)
+
             wb.save(path)
             self._mensaje_corporativo(
                 "Exportación completada",
@@ -2638,6 +2663,7 @@ class DashboardSGC:
             try:
                 wb = Workbook()
                 ws = wb.active
+                assert ws is not None
                 ws.title = "Gestión de Costos"
 
                 encabezados = [
@@ -2657,12 +2683,12 @@ class DashboardSGC:
                         op["observaciones"]
                     ])
 
-                for columna in ws.columns:
+                for indice_columna, columna in enumerate(ws.columns, start=1):
                     ancho = 12
                     for celda in columna:
                         if celda.value is not None:
                             ancho = max(ancho, min(len(str(celda.value)) + 2, 45))
-                    ws.column_dimensions[columna[0].column_letter].width = ancho
+                    ws.column_dimensions[get_column_letter(indice_columna)].width = ancho
 
                 wb.save(ruta)
 
@@ -3133,7 +3159,10 @@ class DashboardSGC:
                         """,
                         (usuario, pw_store, "Asesor"),
                     )
-                    usuario_id = int(cur.lastrowid)
+                    ultimo_id = cur.lastrowid
+                    if ultimo_id is None:
+                        raise RuntimeError("No se pudo obtener el ID del usuario creado.")
+                    usuario_id = int(ultimo_id)
 
                 cur.execute(
                     """
@@ -3246,7 +3275,7 @@ class DashboardSGC:
             )
             return
 
-        vals = self.tabla_asesores.item(sel, "values")
+        vals = self.tabla_asesores.item(sel[0], "values")
         asesor_id = vals[0]
 
         try:
@@ -3512,7 +3541,7 @@ class DashboardSGC:
             )
             return
 
-        vals = self.tabla_asesores.item(sel, "values")
+        vals = self.tabla_asesores.item(sel[0], "values")
         asesor_id = vals[0]
         usuario = vals[1] if len(vals) > 1 else "—"
         nombre = vals[2] if len(vals) > 2 else f"Asesor #{asesor_id}"
@@ -3569,7 +3598,7 @@ class DashboardSGC:
         if not seleccion:
             return
 
-        valores = self.tabla_clientes.item(seleccion, "values")
+        valores = self.tabla_clientes.item(seleccion[0], "values")
         id_cliente = valores[0]
         estado_actual = valores[7]  # Ajustado al nuevo índice en la tupla (Status es el índice 7)
 
@@ -3833,7 +3862,7 @@ class DashboardSGC:
             )
             return
 
-        valores = self.tabla_clientes.item(seleccion, "values")
+        valores = self.tabla_clientes.item(seleccion[0], "values")
         id_cliente = valores[0]
         codigo_act = valores[1]
         nombre_act = valores[2]
@@ -4083,7 +4112,16 @@ class DashboardSGC:
             )
             return
 
-        valores = self.tabla_clientes.item(seleccion, "values")
+        valores_raw = self.tabla_clientes.item(seleccion[0], "values")
+        if not isinstance(valores_raw, (tuple, list)) or len(valores_raw) < 3:
+            self._mensaje_corporativo(
+                "Datos de cliente incompletos",
+                "No fue posible leer correctamente el cliente seleccionado.",
+                tipo="advertencia",
+            )
+            return
+
+        valores = list(valores_raw)
         id_cliente = valores[0]
         codigo_cliente = valores[1] if len(valores) > 1 else "—"
         nombre_cliente = valores[2]
@@ -4157,9 +4195,11 @@ class DashboardSGC:
         top_bar = tk.Frame(panel, bg=self.colores["fondo_main"])
         top_bar.pack(fill="x", padx=25, pady=(0, 10))
 
-        tabla_s = None
+        tabla_s: ttk.Treeview | None = None
 
         def servicio_seleccionado():
+            if tabla_s is None:
+                return None
             seleccion = tabla_s.selection()
             if not seleccion:
                 self._mensaje_corporativo(
@@ -5016,7 +5056,7 @@ class DashboardSGC:
             font=("Arial", 11, "bold")
         ).pack(anchor="w", pady=(4, 16))
 
-        resultado = {"valor": None}
+        resultado: dict[str, str | None] = {"valor": None}
 
         def elegir(valor):
             resultado["valor"] = valor
@@ -5084,7 +5124,7 @@ class DashboardSGC:
         combo.pack(fill="x", ipady=5)
         combo.current(0)
 
-        resultado = {"valor": None}
+        resultado: dict[str, str | None] = {"valor": None}
 
         def confirmar(event=None):
             valor = combo.get().strip()
