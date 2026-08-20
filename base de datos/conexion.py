@@ -4,32 +4,104 @@ import sys
 import hashlib
 
 def generar_id_cliente(tipo_industria, conexion_db):
-    # Mapeo simplificado a prefijos según tipo de industria (1,2,3)
-    industrias = {
+    """
+    Genera el código correlativo del cliente según el sector principal.
+
+    Formato:
+        1-001, 1-002...  Industria manufacturera
+        2-001, 2-002...  Comercio mayorista
+        3-001, 3-002...  Comercio minorista / Retail
+        ...
+        99-001...          Otro / No clasificado
+
+    Se conservan alias de versiones anteriores para no romper registros existentes.
+    """
+    prefijos = {
+        "industria manufacturera": "1",
         "manufacturera": "1",
         "manufactura": "1",
-        "comercial": "2",
-        "retail": "2",
-        "servicios": "3",
-        "servicio": "3",
+
+        "comercio mayorista": "2",
+
+        "comercio minorista / retail": "3",
+        "comercial / retail": "3",
+        "comercial / retard": "3",
+        "retail": "3",
+        "comercial": "3",
+
+        "servicios profesionales": "4",
+        "servicios": "4",
+        "servicio": "4",
+
+        "tecnología / software": "5",
+        "tecnologia / software": "5",
+        "construcción": "6",
+        "construccion": "6",
+        "agricultura / ganadería / pesca": "7",
+        "agricultura / ganaderia / pesca": "7",
+        "alimentos y bebidas": "8",
+        "transporte / logística": "9",
+        "transporte / logistica": "9",
+        "salud": "10",
+        "educación": "11",
+        "educacion": "11",
+        "turismo / hotelería": "12",
+        "turismo / hoteleria": "12",
+        "inmobiliario": "13",
+        "finanzas / seguros": "14",
+        "telecomunicaciones": "15",
+        "energía / petróleo / gas": "16",
+        "energia / petroleo / gas": "16",
+        "minería": "17",
+        "mineria": "17",
+        "automotriz": "18",
+        "textil / moda": "19",
+        "farmacéutica": "20",
+        "farmaceutica": "20",
+        "medios / publicidad": "21",
+        "entretenimiento / eventos": "22",
+        "servicios personales": "23",
+        "ong / fundación": "24",
+        "ong / fundacion": "24",
+        "otro / no clasificado": "99",
+        "otro": "99",
     }
 
-    tipo_lower = tipo_industria.lower() if tipo_industria else ""
-    prefix = "0"
-    # Buscar por subcadena para permitir valores como 'Industria manufacturera'
-    for key, val in industrias.items():
-        if key in tipo_lower:
-            prefix = val
-            break
+    tipo_normalizado = (tipo_industria or "").strip().lower()
+    prefix = prefijos.get(tipo_normalizado)
 
-    # Consultar cuántos clientes existen con ese mismo prefijo para el correlativo
+    if prefix is None:
+        # Compatibilidad: intenta localizar un alias dentro del texto recibido.
+        for nombre, prefijo in prefijos.items():
+            if nombre and nombre in tipo_normalizado:
+                prefix = prefijo
+                break
+
+    if prefix is None:
+        prefix = "99"
+
     cursor = conexion_db.cursor()
-    cursor.execute("SELECT COUNT(*) FROM clientes WHERE codigo LIKE ?", (f"{prefix}-%",))
-    contador = cursor.fetchone()[0] + 1
 
-    # Formato final: 1-001, 2-005, 3-012
-    nuevo_id = f"{prefix}-{contador:03d}"
-    return nuevo_id
+    # MAX en vez de COUNT: evita reutilizar códigos si un cliente fue eliminado.
+    cursor.execute(
+        """
+        SELECT codigo
+        FROM clientes
+        WHERE codigo LIKE ?
+        """,
+        (f"{prefix}-%",)
+    )
+
+    mayor = 0
+    for (codigo,) in cursor.fetchall():
+        try:
+            correlativo = int(str(codigo).split("-", 1)[1])
+            mayor = max(mayor, correlativo)
+        except (ValueError, IndexError, TypeError):
+            continue
+
+    return f"{prefix}-{mayor + 1:03d}"
+
 
 def obtener_app_path():
     if getattr(sys, "frozen", False):
@@ -185,6 +257,19 @@ def inicializar_base_datos():
                 "INSERT INTO servicios (nombre_servicio, descripcion, costo_base) VALUES (?, ?, ?)",
                 (nombre, desc, costo)
             )
+
+    # Normalizar el nombre antiguo utilizado por la página en versiones previas.
+    cursor.execute(
+        """
+        UPDATE servicios
+        SET nombre_servicio = 'Transformación Digital (Sistema Homologado)'
+        WHERE nombre_servicio = 'Transformación Digital (Sistema Holgado)'
+          AND NOT EXISTS (
+              SELECT 1 FROM servicios s2
+              WHERE s2.nombre_servicio = 'Transformación Digital (Sistema Homologado)'
+          )
+        """
+    )
     # 4. Tabla de solicitudes
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS solicitudes_servicio (
@@ -203,6 +288,33 @@ def inicializar_base_datos():
         FOREIGN KEY(cliente_id) REFERENCES clientes(id),
         FOREIGN KEY(servicio_id) REFERENCES servicios(id)
     )
+    """)
+
+    # Migraciones financieras para registros existentes.
+    cursor.execute("PRAGMA table_info(solicitudes_servicio)")
+    ss_cols = [row[1] for row in cursor.fetchall()]
+    if "estado_pago" not in ss_cols:
+        cursor.execute("ALTER TABLE solicitudes_servicio ADD COLUMN estado_pago TEXT DEFAULT 'Pendiente'")
+    if "fecha_pago" not in ss_cols:
+        cursor.execute("ALTER TABLE solicitudes_servicio ADD COLUMN fecha_pago DATE")
+    if "observaciones" not in ss_cols:
+        cursor.execute("ALTER TABLE solicitudes_servicio ADD COLUMN observaciones TEXT")
+
+    # Configuración financiera editable.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS configuracion_financiera (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        iva_pct REAL NOT NULL DEFAULT 16.0,
+        igtf_pct REAL NOT NULL DEFAULT 3.0,
+        igtf_efectivo INTEGER NOT NULL DEFAULT 1,
+        igtf_transferencia INTEGER NOT NULL DEFAULT 0,
+        igtf_pago_movil INTEGER NOT NULL DEFAULT 0
+    )
+    """)
+    cursor.execute("""
+        INSERT OR IGNORE INTO configuracion_financiera
+        (id, iva_pct, igtf_pct, igtf_efectivo, igtf_transferencia, igtf_pago_movil)
+        VALUES (1, 16.0, 3.0, 1, 0, 0)
     """)
 
     # 4b. Tabla para solicitudes web (formularios desde Landing Page)

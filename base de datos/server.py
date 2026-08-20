@@ -246,7 +246,7 @@ def require_auth(fn):
         # y comunicación servidor-servidor.
         chat_key = request.headers.get("X-Chat-Key", "")
 
-        if chat_key == API_KEY:
+        if API_KEY and chat_key == API_KEY:
             return fn(*args, **kwargs)
 
         sesion = obtener_sesion()

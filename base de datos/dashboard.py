@@ -12,6 +12,7 @@ from openpyxl import Workbook
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 import traceback
+import threading
 import certifi
 
 # Importaciones desde conexion
@@ -62,7 +63,7 @@ def obtener_tasa_bcv_automatica():
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     try:
         url = "https://www.bcv.org.ve/"
-        response = requests.get(url, headers=headers, verify=False, timeout=8)
+        response = requests.get(url, headers=headers, verify=certifi.where(), timeout=8)
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, 'html.parser')
             div_dolar = soup.find('div', id='dolar')
@@ -86,9 +87,26 @@ def obtener_tasa_bcv_automatica():
 class DashboardSGC:
     def __init__(self, root):
         self.root = root
-        self.root.title("Sistema de Gestión de Costos SGC - Panel Principal")
-        self.root.geometry("1150x700") 
-        
+        self.root.title("Macilitano Consulting Group C.A. · Sistema de Gestión")
+        self.root.geometry("1180x740")
+        self.root.minsize(1020, 650)
+
+        # Identidad visual de la aplicación.
+        try:
+            ruta_icono_png = obtener_ruta_recurso("logo.png")
+            if os.path.exists(ruta_icono_png):
+                self._app_icon_photo = tk.PhotoImage(file=ruta_icono_png)
+                self.root.iconphoto(True, self._app_icon_photo)
+        except Exception:
+            pass
+
+        try:
+            ruta_icono_ico = obtener_ruta_recurso("logo.ico")
+            if os.path.exists(ruta_icono_ico):
+                self.root.iconbitmap(ruta_icono_ico)
+        except Exception:
+            pass
+
         self.colores = {
             "sidebar": "#6b1426",       
             "botones_menu": "#1f1f1f",  
@@ -119,41 +137,122 @@ class DashboardSGC:
         self.estilo.map("Treeview", 
                 background=[('selected', self.colores["sidebar"])], 
                 foreground=[('selected', 'white')])
+
+        # Acabado global de controles ttk.
+        self.estilo.configure(
+            "Treeview",
+            background="white",
+            fieldbackground="white",
+            foreground=self.colores["texto_oscuro"],
+            font=("Segoe UI", 9),
+            rowheight=30,
+            borderwidth=0,
+        )
+        self.estilo.configure(
+            "Treeview.Heading",
+            background=self.colores["botones_menu"],
+            foreground=self.colores["oro"],
+            font=("Segoe UI", 9, "bold"),
+            padding=(8, 8),
+            relief="flat",
+        )
+        self.estilo.configure("TCombobox", padding=6, font=("Segoe UI", 9))
+        self.estilo.configure("Vertical.TScrollbar", arrowsize=13)
+        self.estilo.configure("Horizontal.TScrollbar", arrowsize=13)
         
         self.ultimo_mensaje_notificado = 0
         self.notificaciones_chat = 0
         self.solicitudes_token = None
         self.ultima_solicitud_web_id = 0
         self.monitor_solicitudes_activo = False
+        self.monitor_solicitudes_en_consulta = False
+        self.ids_solicitudes_vistas = set()
+        self.monitor_solicitudes_inicializado = False
+        self.total_solicitudes_pendientes = 0
         self.iniciar_monitor_mensajes()
         self.configurar_interfaz()
 
     def configurar_interfaz(self):
-        sidebar = tk.Frame(self.root, bg=self.colores["sidebar"], width=220)
+        sidebar = tk.Frame(
+            self.root,
+            bg=self.colores["sidebar"],
+            width=240
+        )
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
-        
+
+        marca = tk.Frame(sidebar, bg=self.colores["sidebar"])
+        marca.pack(fill="x", pady=(18, 12))
+
         ruta_logo = obtener_ruta_recurso("logo.png")
         if os.path.exists(ruta_logo):
             try:
                 self._tk_logo = tk.PhotoImage(file=ruta_logo)
-                self._tk_logo = self._tk_logo.subsample(2, 2)
-                lbl_logo = tk.Label(sidebar, image=self._tk_logo, bg=self.colores["sidebar"])
+                ancho_logo = max(1, self._tk_logo.width())
+                factor = max(1, round(ancho_logo / 150))
+                if factor > 1:
+                    self._tk_logo = self._tk_logo.subsample(factor, factor)
+
+                lbl_logo = tk.Label(
+                    marca,
+                    image=self._tk_logo,
+                    bg=self.colores["sidebar"],
+                    bd=0
+                )
+                lbl_logo.pack()
             except Exception:
-                lbl_logo = tk.Label(sidebar, text="MACILITANO\nCONSULTING", fg="white", bg=self.colores["sidebar"], font=("Arial", 14, "bold"))
+                tk.Label(
+                    marca,
+                    text="MACILITANO",
+                    fg="white",
+                    bg=self.colores["sidebar"],
+                    font=("Georgia", 15, "bold")
+                ).pack()
         else:
-            lbl_logo = tk.Label(sidebar, text="MACILITANO\nCONSULTING", fg="white", bg=self.colores["sidebar"], font=("Arial", 14, "bold"))
-        lbl_logo.pack(pady=20)
+            tk.Label(
+                marca,
+                text="MACILITANO",
+                fg="white",
+                bg=self.colores["sidebar"],
+                font=("Georgia", 15, "bold")
+            ).pack()
+
+        tk.Label(
+            marca,
+            text="CONSULTING GROUP C.A.",
+            fg=self.colores["oro"],
+            bg=self.colores["sidebar"],
+            font=("Segoe UI", 8, "bold")
+        ).pack(pady=(7, 0))
+
+        tk.Frame(
+            sidebar,
+            bg=self.colores["oro"],
+            height=1
+        ).pack(fill="x", padx=18, pady=(0, 10))
 
         # Construir botones del menú y guardar referencias para control de permisos
         self.menu_buttons = {}
         self.notas_pendientes = 0
 
         def add_menu_button(texto, comando):
-            btn = tk.Button(sidebar, text=texto, bg=self.colores["botones_menu"], fg=self.colores["oro"],
-                            font=("Arial", 11, "bold"), relief="flat", activebackground=self.colores["oro"],
-                            activeforeground="black", anchor="w", padx=20, command=comando)
-            btn.pack(fill="x", pady=4, padx=10)
+            btn = tk.Button(
+                sidebar,
+                text=texto,
+                bg=self.colores["botones_menu"],
+                fg=self.colores["oro"],
+                font=("Segoe UI", 10, "bold"),
+                relief="flat",
+                bd=0,
+                activebackground=self.colores["oro"],
+                activeforeground=self.colores["botones_menu"],
+                anchor="w",
+                padx=18,
+                pady=8,
+                cursor="hand2",
+                command=comando
+            )
+            btn.pack(fill="x", pady=3, padx=12)
             self.menu_buttons[texto] = btn
             return btn
 
@@ -162,7 +261,7 @@ class DashboardSGC:
         add_menu_button("Asesores", self.mostrar_asesores)
         add_menu_button("Servicios", self.mostrar_servicios)
         add_menu_button("Gestión de Costos", self.mostrar_gestion_costos)
-        add_menu_button("Solicitudes", self.mostrar_notificaciones)
+        self.btn_solicitudes = add_menu_button("Solicitudes", self.mostrar_notificaciones)
         
         self.btn_chat = add_menu_button(
     "💬 Chats",
@@ -177,6 +276,13 @@ class DashboardSGC:
         
         self.mostrar_inicio()
         self.actualizar_alertas_globales()
+
+        # main.py asigna usuario/rol justo después de crear el Dashboard.
+        # Aplicamos permisos un instante después para leer el rol real.
+        try:
+            self.root.after(250, self.aplicar_permisos)
+        except Exception:
+            pass
     
         # ============================================================
     # CHAT INTERNO
@@ -201,9 +307,10 @@ class DashboardSGC:
 
         if not usuario_actual:
 
-            messagebox.showwarning(
-                "Chats",
-                "No se pudo identificar al usuario actual."
+            self._mensaje_corporativo(
+                "Chat no disponible",
+                "No se pudo identificar al usuario actual.",
+                tipo="advertencia"
             )
 
             return
@@ -231,9 +338,11 @@ class DashboardSGC:
 
         except Exception as e:
 
-            messagebox.showerror(
-                "Error",
-                f"No se pudo abrir el módulo de Chats.\n\n{e}"
+            self._mensaje_corporativo(
+                "No se pudo abrir el chat",
+                "Ocurrió un problema al iniciar el módulo de conversaciones.",
+                tipo="error",
+                detalle=str(e)
             )
 
     def cerrar_ventana_chat(self):
@@ -246,41 +355,338 @@ class DashboardSGC:
                 pass
 
             self.ventana_chat = None
+    def _rol_actual(self):
+        return str(getattr(self, "rol_autenticado", "") or "").strip().lower()
+
+    def _es_administrador(self):
+        return self._rol_actual() == "administrador"
+
+    def _requiere_administrador(self, accion="realizar esta acción"):
+        if self._es_administrador():
+            return True
+
+        self._mensaje_corporativo(
+            "Acceso restringido",
+            f"Solo un Administrador puede {accion}.",
+            tipo="advertencia"
+        )
+        return False
+
     def aplicar_permisos(self):
-        """Aplica reglas de visibilidad/permiso en la UI según `self.rol_autenticado`."""
-        rol = getattr(self, 'rol_autenticado', None)
+        """Aplica la matriz de permisos de la aplicación según el rol autenticado."""
+        es_admin = self._es_administrador()
+
+        # Menús exclusivamente administrativos.
+        for nombre in ("Asesores", "Historial Logs"):
+            btn = getattr(self, "menu_buttons", {}).get(nombre)
+            if not btn:
+                continue
+
+            if es_admin:
+                if not btn.winfo_manager():
+                    btn.pack(fill="x", pady=4, padx=10)
+                btn.config(state="normal")
+            else:
+                try:
+                    btn.pack_forget()
+                except Exception:
+                    btn.config(state="disabled")
+
+        # Compatibilidad con la referencia histórica del botón de logs.
+        if hasattr(self, "btn_historial"):
+            if es_admin:
+                if not self.btn_historial.winfo_manager():
+                    self.btn_historial.pack(fill="x", pady=4, padx=10)
+                self.btn_historial.config(state="normal")
+            else:
+                try:
+                    self.btn_historial.pack_forget()
+                except Exception:
+                    self.btn_historial.config(state="disabled")
+
+    # ============================================================
+    # VENTANAS / DIÁLOGOS CORPORATIVOS
+    # ============================================================
+    def _centrar_ventana(self, ventana, ancho, alto):
         try:
-            if hasattr(self, 'btn_historial'):
-                if rol is None or str(rol).lower() != 'administrador':
-                    # Ocultar el botón de historial si no es administrador
-                    try:
-                        self.btn_historial.pack_forget()
-                    except Exception:
-                        self.btn_historial.config(state='disabled')
-                else:
-                    # Asegurar que esté visible si es administrador
-                    try:
-                        self.btn_historial.pack(fill="x", pady=4, padx=10)
-                    except Exception:
-                        self.btn_historial.config(state='normal')
+            self.root.update_idletasks()
+            x = self.root.winfo_x() + max(0, (self.root.winfo_width() - ancho) // 2)
+            y = self.root.winfo_y() + max(0, (self.root.winfo_height() - alto) // 2)
+            ventana.geometry(f"{ancho}x{alto}+{x}+{y}")
+        except Exception:
+            ventana.geometry(f"{ancho}x{alto}")
+
+    def _crear_modal_corporativo(self, titulo, subtitulo="", ancho=520, alto=320, icono="◆"):
+        ventana = tk.Toplevel(self.root)
+        ventana.title(titulo)
+        ventana.configure(bg=self.colores["fondo_main"])
+
+        try:
+            if hasattr(self, "_app_icon_photo"):
+                ventana.iconphoto(False, self._app_icon_photo)
         except Exception:
             pass
-        
+
+        try:
+            ruta_icono_ico = obtener_ruta_recurso("logo.ico")
+            if os.path.exists(ruta_icono_ico):
+                ventana.iconbitmap(ruta_icono_ico)
+        except Exception:
+            pass
+        ventana.transient(self.root)
+        ventana.grab_set()
+        ventana.resizable(False, False)
+        self._centrar_ventana(ventana, ancho, alto)
+
+        cabecera = tk.Frame(ventana, bg=self.colores["sidebar"], height=82)
+        cabecera.pack(fill="x")
+        cabecera.pack_propagate(False)
+
+        tk.Label(
+            cabecera, text=icono, bg=self.colores["sidebar"],
+            fg=self.colores["oro"], font=("Arial", 22, "bold")
+        ).pack(side="left", padx=(22, 12), pady=20)
+
+        textos = tk.Frame(cabecera, bg=self.colores["sidebar"])
+        textos.pack(side="left", fill="y", pady=16)
+
+        tk.Label(
+            textos, text=titulo, bg=self.colores["sidebar"], fg="white",
+            font=("Arial", 14, "bold")
+        ).pack(anchor="w")
+
+        if subtitulo:
+            tk.Label(
+                textos, text=subtitulo, bg=self.colores["sidebar"],
+                fg="#eadba7", font=("Arial", 9)
+            ).pack(anchor="w", pady=(3, 0))
+
+        cuerpo = tk.Frame(ventana, bg=self.colores["fondo_main"])
+        cuerpo.pack(fill="both", expand=True, padx=24, pady=20)
+        return ventana, cuerpo
+
+    def _dialogo_texto_corporativo(
+        self, titulo, mensaje, valor_inicial="", etiqueta="", ancho=540, ocultar=False
+    ):
+        ventana, cuerpo = self._crear_modal_corporativo(
+            titulo, "Complete la información solicitada", ancho=ancho, alto=290, icono="✦"
+        )
+
+        tk.Label(
+            cuerpo, text=mensaje, bg=self.colores["fondo_main"],
+            fg=self.colores["texto_oscuro"], font=("Arial", 10),
+            justify="left", wraplength=ancho - 70
+        ).pack(anchor="w", pady=(2, 10))
+
+        if etiqueta:
+            tk.Label(
+                cuerpo, text=etiqueta, bg=self.colores["fondo_main"],
+                fg=self.colores["sidebar"], font=("Arial", 9, "bold")
+            ).pack(anchor="w", pady=(2, 5))
+
+        marco = tk.Frame(cuerpo, bg="white", highlightbackground="#d9d1c7", highlightthickness=1)
+        marco.pack(fill="x", pady=(0, 18))
+
+        entrada = tk.Entry(
+            marco, font=("Arial", 11), relief="flat", bd=0,
+            show="*" if ocultar else ""
+        )
+        entrada.pack(fill="x", padx=12, pady=10)
+        if valor_inicial:
+            entrada.insert(0, valor_inicial)
+            entrada.select_range(0, tk.END)
+
+        resultado = {"valor": None}
+
+        def confirmar(event=None):
+            valor = entrada.get().strip()
+            if not valor:
+                return
+            resultado["valor"] = valor
+            ventana.destroy()
+
+        def cancelar(event=None):
+            ventana.destroy()
+
+        botones = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        botones.pack(fill="x")
+
+        tk.Button(
+            botones, text="Cancelar", bg=self.colores["botones_menu"],
+            fg=self.colores["oro"], font=("Arial", 10, "bold"),
+            relief="flat", padx=18, pady=7, command=cancelar
+        ).pack(side="right")
+
+        tk.Button(
+            botones, text="Confirmar", bg=self.colores["sidebar"], fg="white",
+            font=("Arial", 10, "bold"), relief="flat", padx=18, pady=7,
+            command=confirmar
+        ).pack(side="right", padx=(0, 8))
+
+        entrada.bind("<Return>", confirmar)
+        entrada.bind("<Escape>", cancelar)
+        entrada.focus_set()
+        ventana.wait_window()
+        return resultado["valor"]
+
+    def _mensaje_corporativo(self, titulo, mensaje, tipo="info", detalle=""):
+        iconos = {
+            "info": ("i", self.colores["sidebar"]),
+            "exito": ("✓", self.colores["verde_aprobar"]),
+            "advertencia": ("!", "#b7791f"),
+            "error": ("×", self.colores["rojo_eliminar"]),
+        }
+        icono, color = iconos.get(tipo, iconos["info"])
+
+        ventana, cuerpo = self._crear_modal_corporativo(
+            titulo, "", ancho=520, alto=310 if detalle else 270, icono=icono
+        )
+
+        tk.Label(
+            cuerpo, text=mensaje, bg=self.colores["fondo_main"],
+            fg=self.colores["texto_oscuro"], font=("Arial", 11, "bold"),
+            justify="left", wraplength=450
+        ).pack(anchor="w", pady=(5, 8))
+
+        if detalle:
+            caja = tk.Frame(cuerpo, bg="white", highlightbackground="#ddd5c8", highlightthickness=1)
+            caja.pack(fill="x", pady=(2, 14))
+            tk.Label(
+                caja, text=detalle, bg="white", fg=self.colores["texto_oscuro"],
+                font=("Arial", 9), justify="left", wraplength=430
+            ).pack(anchor="w", padx=12, pady=10)
+
+        tk.Button(
+            cuerpo, text="Aceptar", bg=color, fg="white",
+            font=("Arial", 10, "bold"), relief="flat",
+            padx=22, pady=7, command=ventana.destroy
+        ).pack(anchor="e", pady=(10, 0))
+
+        ventana.bind("<Return>", lambda e: ventana.destroy())
+        ventana.bind("<Escape>", lambda e: ventana.destroy())
+        ventana.wait_window()
+
+    def _confirmar_corporativo(
+        self,
+        titulo,
+        mensaje,
+        detalle="",
+        texto_confirmar="Confirmar",
+        peligro=False,
+    ):
+        """Confirmación consistente para operaciones importantes."""
+        ventana, cuerpo = self._crear_modal_corporativo(
+            titulo,
+            "Revise la información antes de continuar",
+            ancho=560,
+            alto=340 if detalle else 290,
+            icono="!" if peligro else "?"
+        )
+
+        tk.Label(
+            cuerpo,
+            text=mensaje,
+            bg=self.colores["fondo_main"],
+            fg=self.colores["texto_oscuro"],
+            font=("Arial", 11, "bold"),
+            justify="left",
+            wraplength=485,
+        ).pack(anchor="w", pady=(4, 10))
+
+        if detalle:
+            caja = tk.Frame(
+                cuerpo,
+                bg="white",
+                highlightbackground="#ddd5c8",
+                highlightthickness=1,
+            )
+            caja.pack(fill="x", pady=(0, 16))
+
+            tk.Label(
+                caja,
+                text=detalle,
+                bg="white",
+                fg=self.colores["texto_oscuro"],
+                font=("Arial", 9),
+                justify="left",
+                wraplength=455,
+            ).pack(anchor="w", padx=12, pady=10)
+
+        resultado = {"valor": False}
+
+        def aceptar():
+            resultado["valor"] = True
+            ventana.destroy()
+
+        def cancelar():
+            ventana.destroy()
+
+        botones = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        botones.pack(fill="x", pady=(8, 0))
+
+        tk.Button(
+            botones,
+            text="Cancelar",
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=18,
+            pady=7,
+            command=cancelar,
+        ).pack(side="right")
+
+        tk.Button(
+            botones,
+            text=texto_confirmar,
+            bg=self.colores["rojo_eliminar"] if peligro else self.colores["sidebar"],
+            fg="white",
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=18,
+            pady=7,
+            command=aceptar,
+        ).pack(side="right", padx=(0, 8))
+
+        ventana.bind("<Escape>", lambda e: cancelar())
+        ventana.wait_window()
+        return resultado["valor"]
+
     def crear_panel_principal(self, titulo):
         for widget in self.area_principal.winfo_children():
             widget.destroy()
-        
-        lbl_titulo = tk.Label(self.area_principal, text=titulo, bg=self.colores["fondo_main"], 
-                fg=self.colores["sidebar"], font=("Arial", 20, "bold"))
-        lbl_titulo.pack(anchor="w", padx=25, pady=20)
-        
+
+        cabecera = tk.Frame(
+            self.area_principal,
+            bg=self.colores["fondo_main"]
+        )
+        cabecera.pack(fill="x", padx=28, pady=(20, 12))
+
+        tk.Label(
+            cabecera,
+            text=titulo,
+            bg=self.colores["fondo_main"],
+            fg=self.colores["sidebar"],
+            font=("Segoe UI", 20, "bold")
+        ).pack(anchor="w")
+
+        tk.Frame(
+            cabecera,
+            bg=self.colores["oro"],
+            height=2
+        ).pack(fill="x", pady=(9, 0))
+
         return self.area_principal
 
     def actualizar_alertas_globales(self):
+        """Inicia el monitor de solicitudes sin bloquear la interfaz."""
         self.notas_pendientes = 0
+
         if not getattr(self, "monitor_solicitudes_activo", False):
             self.monitor_solicitudes_activo = True
-            self.root.after(1500, self.monitor_solicitudes_web)
+            # Arranca rápido para reducir la ventana en la que una solicitud
+            # recién llegada podría pasar desapercibida.
+            self.root.after(350, self.monitor_solicitudes_web)
 
     def _api_solicitudes(self, metodo, ruta, **kwargs):
         """Cliente centralizado para solicitudes web alojadas en PythonAnywhere."""
@@ -292,150 +698,593 @@ class DashboardSGC:
             password = getattr(self, "password_autenticado", None)
             if not usuario or not password:
                 raise RuntimeError("No hay credenciales de sesión disponibles")
+
             login = requests.post(
                 f"{CHAT_SERVER_URL.rstrip('/')}/api/session",
                 json={"username": usuario, "password": password},
-                timeout=15,
+                timeout=10,
                 verify=certifi.where(),
             )
             login.raise_for_status()
             data_login = login.json()
+
             if not data_login.get("ok"):
-                raise RuntimeError(data_login.get("error", "No se pudo iniciar sesión remota"))
+                raise RuntimeError(
+                    data_login.get("error", "No se pudo iniciar sesión remota")
+                )
+
             self.solicitudes_token = data_login["token"]
 
         headers = {"Authorization": f"Bearer {self.solicitudes_token}"}
+
         respuesta = requests.request(
             metodo,
             f"{CHAT_SERVER_URL.rstrip('/')}{ruta}",
             headers=headers,
-            timeout=15,
+            timeout=10,
             verify=certifi.where(),
             **kwargs,
         )
+
         if respuesta.status_code == 401:
             self.solicitudes_token = None
             return self._api_solicitudes(metodo, ruta, **kwargs)
+
         respuesta.raise_for_status()
         data = respuesta.json()
+
         if not data.get("ok"):
             raise RuntimeError(data.get("error", "Error en API de solicitudes"))
+
         return data
 
-    def monitor_solicitudes_web(self):
-        """Muestra una alerta estilo app cuando entra una nueva solicitud desde la web."""
+    def _actualizar_badge_solicitudes(self, cantidad):
+        """Actualiza el texto del menú sin recrear botones."""
+        self.total_solicitudes_pendientes = int(cantidad or 0)
+
+        if not hasattr(self, "btn_solicitudes"):
+            return
+
+        if self.total_solicitudes_pendientes > 0:
+            texto = f"Solicitudes   ● {self.total_solicitudes_pendientes}"
+        else:
+            texto = "Solicitudes"
+
         try:
-            data = self._api_solicitudes("GET", "/api/solicitudes?estado=Pendiente")
-            items = data.get("items", [])
-            ids = [int(x.get("id", 0)) for x in items]
-            max_id = max(ids, default=0)
-            if self.ultima_solicitud_web_id == 0:
-                self.ultima_solicitud_web_id = max_id
-            else:
-                nuevas = [x for x in items if int(x.get("id", 0)) > self.ultima_solicitud_web_id]
-                for solicitud in sorted(nuevas, key=lambda x: int(x.get("id", 0))):
-                    self.mostrar_notificacion_solicitud(solicitud)
-                self.ultima_solicitud_web_id = max(self.ultima_solicitud_web_id, max_id)
-        except Exception as e:
-            print(f"Monitor solicitudes web: {e}")
-        try:
-            self.root.after(5000, self.monitor_solicitudes_web)
+            self.btn_solicitudes.config(text=texto)
         except Exception:
             pass
 
+    def monitor_solicitudes_web(self):
+        """
+        Dispara una consulta en segundo plano.
+
+        Antes la petición HTTPS se hacía directamente dentro del hilo de Tkinter.
+        Si la red tardaba, también se atrasaban los siguientes callbacks y la alerta
+        podía aparecer muchos segundos después. Ahora la interfaz nunca espera a la red.
+        """
+        if not getattr(self, "monitor_solicitudes_activo", False):
+            return
+
+        if getattr(self, "monitor_solicitudes_en_consulta", False):
+            # Ya hay una consulta en curso: no lanzamos otra encima.
+            try:
+                self.root.after(1000, self.monitor_solicitudes_web)
+            except Exception:
+                pass
+            return
+
+        self.monitor_solicitudes_en_consulta = True
+
+        hilo = threading.Thread(
+            target=self._consultar_solicitudes_monitor,
+            daemon=True,
+        )
+        hilo.start()
+
+        # El siguiente ciclo se programa desde aquí y la red corre aparte.
+        try:
+            self.root.after(2000, self.monitor_solicitudes_web)
+        except Exception:
+            pass
+
+    def _consultar_solicitudes_monitor(self):
+        """Trabajo de red del monitor; nunca crea widgets desde este hilo."""
+        try:
+            data = self._api_solicitudes(
+                "GET",
+                "/api/solicitudes?estado=Pendiente",
+            )
+            items = data.get("items", [])
+
+            # Entregamos el resultado al hilo principal de Tkinter.
+            try:
+                self.root.after(
+                    0,
+                    lambda datos=list(items): self._procesar_resultado_monitor(datos),
+                )
+            except Exception:
+                self.monitor_solicitudes_en_consulta = False
+
+        except Exception as e:
+            print(f"Monitor solicitudes web: {e}")
+            self.monitor_solicitudes_en_consulta = False
+
+    def _procesar_resultado_monitor(self, items):
+        """Procesa cambios y muestra alertas solamente desde Tkinter."""
+        try:
+            ids_actuales = {
+                int(x.get("id", 0))
+                for x in items
+                if int(x.get("id", 0)) > 0
+            }
+
+            self._actualizar_badge_solicitudes(len(items))
+
+            if not self.monitor_solicitudes_inicializado:
+                # Primera fotografía. Registramos lo que ya existía al abrir
+                # el sistema para no bombardear con solicitudes antiguas.
+                self.ids_solicitudes_vistas = set(ids_actuales)
+                self.ultima_solicitud_web_id = max(ids_actuales, default=0)
+                self.monitor_solicitudes_inicializado = True
+                return
+
+            nuevas = [
+                solicitud
+                for solicitud in items
+                if int(solicitud.get("id", 0)) not in self.ids_solicitudes_vistas
+            ]
+
+            for solicitud in sorted(
+                nuevas,
+                key=lambda x: int(x.get("id", 0)),
+            ):
+                solicitud_id = int(solicitud.get("id", 0))
+
+                if solicitud_id:
+                    self.ids_solicitudes_vistas.add(solicitud_id)
+                    self.ultima_solicitud_web_id = max(
+                        self.ultima_solicitud_web_id,
+                        solicitud_id,
+                    )
+
+                self.mostrar_notificacion_solicitud(solicitud)
+
+            # Conservamos IDs vistos aunque la solicitud después sea aprobada
+            # o rechazada; así jamás se notifica dos veces la misma.
+            self.ids_solicitudes_vistas.update(ids_actuales)
+
+        finally:
+            self.monitor_solicitudes_en_consulta = False
+
     def mostrar_notificacion_solicitud(self, solicitud):
         n = tk.Toplevel(self.root)
-        n.title("Nueva solicitud web")
+        n.title("Nueva solicitud")
+
+        try:
+            if hasattr(self, "_app_icon_photo"):
+                n.iconphoto(False, self._app_icon_photo)
+        except Exception:
+            pass
+
+        try:
+            ruta_icono_ico = obtener_ruta_recurso("logo.ico")
+            if os.path.exists(ruta_icono_ico):
+                n.iconbitmap(ruta_icono_ico)
+        except Exception:
+            pass
+
+        try:
+            self.root.bell()
+        except Exception:
+            pass
         n.resizable(False, False)
         n.configure(bg="white")
-        n.attributes("-topmost", True)
-        ancho, alto = 385, 180
+        try:
+            n.attributes("-topmost", True)
+            n.after(2500, lambda: n.winfo_exists() and n.attributes("-topmost", False))
+        except Exception:
+            pass
+
+        ancho, alto = 430, 205
         n.update_idletasks()
         sw, sh = n.winfo_screenwidth(), n.winfo_screenheight()
-        n.geometry(f"{ancho}x{alto}+{sw-ancho-25}+{max(20, sh-alto-70)}")
-        tk.Label(n, text="🔔  Nueva solicitud de asesoría", bg="white", fg=self.colores["sidebar"], font=("Arial", 13, "bold")).pack(anchor="w", padx=15, pady=(12, 3))
-        tk.Label(n, text=solicitud.get("cliente_potencial") or "Cliente", bg="white", fg="#222", font=("Arial", 10, "bold")).pack(anchor="w", padx=15)
-        tk.Label(n, text=solicitud.get("servicio_interes") or "Servicio no especificado", bg="white", fg="#666", font=("Arial", 9), wraplength=345, justify="left").pack(anchor="w", padx=15, pady=(2, 8))
-        tk.Button(n, text="Ver solicitud", bg=self.colores["sidebar"], fg="white", relief="flat", cursor="hand2", command=lambda: (n.destroy(), self.mostrar_notificaciones())).pack(anchor="e", padx=15, pady=(0, 10))
-        n.after(9000, lambda: n.destroy() if n.winfo_exists() else None)
-    
+        n.geometry(f"{ancho}x{alto}+{sw-ancho-28}+{max(25, sh-alto-75)}")
+
+        cabecera = tk.Frame(n, bg=self.colores["sidebar"], height=55)
+        cabecera.pack(fill="x")
+        cabecera.pack_propagate(False)
+
+        tk.Label(
+            cabecera, text="NUEVA SOLICITUD WEB", bg=self.colores["sidebar"],
+            fg="white", font=("Arial", 10, "bold")
+        ).pack(side="left", padx=16, pady=17)
+
+        tk.Label(
+            cabecera, text="●", bg=self.colores["sidebar"],
+            fg=self.colores["oro"], font=("Arial", 12, "bold")
+        ).pack(side="right", padx=16)
+
+        cuerpo = tk.Frame(n, bg="white")
+        cuerpo.pack(fill="both", expand=True, padx=16, pady=12)
+
+        cliente = solicitud.get("cliente_potencial") or "Cliente"
+        servicio = solicitud.get("servicio_interes") or "Servicio no especificado"
+
+        tk.Label(
+            cuerpo, text=cliente, bg="white", fg=self.colores["sidebar"],
+            font=("Arial", 12, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            cuerpo, text=servicio, bg="white", fg=self.colores["texto_oscuro"],
+            font=("Arial", 9), wraplength=390, justify="left"
+        ).pack(anchor="w", pady=(3, 10))
+
+        botones = tk.Frame(cuerpo, bg="white")
+        botones.pack(fill="x")
+
+        tk.Button(
+            botones, text="Ver solicitudes", bg=self.colores["sidebar"], fg="white",
+            font=("Arial", 9, "bold"), relief="flat", padx=14, pady=6,
+            command=lambda: (n.destroy(), self.mostrar_notificaciones())
+        ).pack(side="right")
+
+        tk.Button(
+            botones, text="Cerrar", bg="#f2eee8", fg=self.colores["texto_oscuro"],
+            font=("Arial", 9), relief="flat", padx=12, pady=6,
+            command=n.destroy
+        ).pack(side="right", padx=(0, 7))
+
+        try:
+            n.after(10000, lambda: n.winfo_exists() and n.destroy())
+        except Exception:
+            pass
+
     def mostrar_inicio(self):
         panel = self.crear_panel_principal("Panel de Control Ejecutivo")
-        
-        total_clientes = 0
+
+        # ============================================================
+        # MÉTRICAS REALES DEL SISTEMA
+        # ============================================================
+        total_clientes_activos = 0
         total_servicios = 0
-        total_solicitudes = 0
-        ventas_mes = 0.0
-        
+        facturado_mes = 0.0
+        cobrado_mes = 0.0
+        por_cobrar = 0.0
+        solicitudes_pendientes = 0
+        clientes_recientes = []
+        operaciones_recientes = []
+        meses_grafico = []
+        ingresos_grafico = []
+
         try:
             conn = obtener_conexion()
             cursor = conn.cursor()
-            
-            cursor.execute("SELECT COUNT(*) FROM clientes")
-            total_clientes = cursor.fetchone()[0]
-            
+
+            cursor.execute("""
+                SELECT COUNT(*)
+                FROM clientes
+                WHERE LOWER(COALESCE(estado, 'Activo')) = 'activo'
+            """)
+            total_clientes_activos = int(cursor.fetchone()[0] or 0)
+
             cursor.execute("SELECT COUNT(*) FROM servicios")
-            total_servicios = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM solicitudes_servicio")
-            total_solicitudes = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT SUM(total_usd) FROM solicitudes_servicio WHERE activo = 'Activo'")
-            monto_ventas = cursor.fetchone()[0]
-            if monto_ventas:
-                ventas_mes = monto_ventas
-                
+            total_servicios = int(cursor.fetchone()[0] or 0)
+
+            cursor.execute("""
+                SELECT COALESCE(SUM(total_usd), 0)
+                FROM solicitudes_servicio
+                WHERE strftime('%Y-%m', fecha_solicitud) = strftime('%Y-%m', 'now', 'localtime')
+            """)
+            facturado_mes = float(cursor.fetchone()[0] or 0)
+
+            cursor.execute("""
+                SELECT COALESCE(SUM(total_usd), 0)
+                FROM solicitudes_servicio
+                WHERE COALESCE(estado_pago, 'Pendiente') = 'Pagado'
+                  AND strftime('%Y-%m', COALESCE(fecha_pago, fecha_solicitud))
+                      = strftime('%Y-%m', 'now', 'localtime')
+            """)
+            cobrado_mes = float(cursor.fetchone()[0] or 0)
+
+            cursor.execute("""
+                SELECT COALESCE(SUM(total_usd), 0)
+                FROM solicitudes_servicio
+                WHERE COALESCE(estado_pago, 'Pendiente') = 'Pendiente'
+            """)
+            por_cobrar = float(cursor.fetchone()[0] or 0)
+
+            cursor.execute("""
+                SELECT codigo, nombre, servicio, estado
+                FROM clientes
+                ORDER BY id DESC
+                LIMIT 5
+            """)
+            clientes_recientes = cursor.fetchall()
+
+            cursor.execute("""
+                SELECT
+                    c.nombre,
+                    s.nombre_servicio,
+                    ss.total_usd,
+                    COALESCE(ss.estado_pago, 'Pendiente'),
+                    COALESCE(ss.fecha_solicitud, '')
+                FROM solicitudes_servicio ss
+                INNER JOIN clientes c ON c.id = ss.cliente_id
+                INNER JOIN servicios s ON s.id = ss.servicio_id
+                ORDER BY ss.id DESC
+                LIMIT 5
+            """)
+            operaciones_recientes = cursor.fetchall()
+
+            # Últimos 6 meses reales de facturación.
+            cursor.execute("""
+                WITH RECURSIVE meses(n) AS (
+                    SELECT 5
+                    UNION ALL
+                    SELECT n - 1 FROM meses WHERE n > 0
+                )
+                SELECT
+                    strftime('%Y-%m', date('now', 'start of month', printf('-%d months', n))) AS ym,
+                    COALESCE((
+                        SELECT SUM(ss.total_usd)
+                        FROM solicitudes_servicio ss
+                        WHERE strftime('%Y-%m', ss.fecha_solicitud) =
+                              strftime('%Y-%m', date('now', 'start of month', printf('-%d months', n)))
+                    ), 0) AS total
+                FROM meses
+                ORDER BY ym
+            """)
+
+            filas_meses = cursor.fetchall()
+
+            nombres_meses = {
+                "01": "Ene", "02": "Feb", "03": "Mar", "04": "Abr",
+                "05": "May", "06": "Jun", "07": "Jul", "08": "Ago",
+                "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dic"
+            }
+
+            for ym, total in filas_meses:
+                partes = str(ym).split("-")
+                etiqueta = nombres_meses.get(partes[1], partes[1]) if len(partes) == 2 else str(ym)
+                meses_grafico.append(etiqueta)
+                ingresos_grafico.append(float(total or 0))
+
             conn.close()
+
         except Exception as e:
-            print(f"Error consultando métricas locales: {e}")
-            
-        tasa_bcv = obtener_tasa_bcv_automatica() or 40.00 
+            print(f"Error consultando métricas reales del panel: {e}")
 
+        # Solicitudes web pendientes. Inicio no falla si el servidor no responde.
+        try:
+            data_web = self._api_solicitudes("GET", "/api/solicitudes")
+            for solicitud in data_web.get("items", []):
+                estado_web = str(
+                    solicitud.get("estado") or "Pendiente"
+                ).strip().lower()
+
+                if estado_web in {"pendiente", "contactado"}:
+                    solicitudes_pendientes += 1
+        except Exception:
+            pass
+
+        tasa_bcv = obtener_tasa_bcv_automatica() or 0.0
+
+        # ============================================================
+        # TARJETAS EJECUTIVAS
+        # ============================================================
         frame_tarjetas = tk.Frame(panel, bg=self.colores["fondo_main"])
-        frame_tarjetas.pack(fill="x", padx=25, pady=10)
-        
-        metricas = [
-            ("Clientes Activos", str(total_clientes), "#2a9d8f"),
-            ("Catálogo Servicios", str(total_servicios), "#457b9d"),
-            ("Solicitudes Proc.", str(total_solicitudes), "#e07a5f"),
-            ("Ventas del Mes", f"$ {ventas_mes:,.2f}", "#6b1426"),
-            ("Tasa Oficial BCV", f"{tasa_bcv:.2f} Bs.", "#d4af37")
-        ]
-        
-        for idx, (titulo, valor, color_borde) in enumerate(metricas):
-            tarjeta = tk.Frame(frame_tarjetas, bg=self.colores["blanco_tarjeta"], 
-                            highlightbackground=color_borde, highlightthickness=2, bd=0)
-            tarjeta.grid(row=0, column=idx, padx=8, pady=5, sticky="nsew")
-            frame_tarjetas.grid_columnconfigure(idx, weight=1)
-            
-            tk.Label(tarjeta, text=titulo, fg="#777777", bg=self.colores["blanco_tarjeta"], font=("Arial", 10, "bold")).pack(pady=(10, 2), padx=10)
-            tk.Label(tarjeta, text=valor, fg=self.colores["texto_oscuro"], bg=self.colores["blanco_tarjeta"], font=("Arial", 16, "bold")).pack(pady=(0, 10), padx=10)
+        frame_tarjetas.pack(fill="x", padx=25, pady=(8, 10))
 
-        frame_grafico = tk.Frame(panel, bg=self.colores["blanco_tarjeta"], bd=1, relief="solid")
-        frame_grafico.pack(fill="both", expand=True, padx=25, pady=20)
-        
-        lbl_grafico_titulo = tk.Label(frame_grafico, text="📊 Evolución de Ingresos Mensuales (USD)", 
-                bg=self.colores["blanco_tarjeta"], fg=self.colores["sidebar"], font=("Arial", 12, "bold"))
-        lbl_grafico_titulo.pack(anchor="w", padx=15, pady=10)
-        
+        metricas = [
+            ("Clientes Activos", str(total_clientes_activos)),
+            ("Servicios", str(total_servicios)),
+            ("Solicitudes Pend.", str(solicitudes_pendientes)),
+            ("Facturado Mes", f"$ {facturado_mes:,.2f}"),
+            ("Por Cobrar", f"$ {por_cobrar:,.2f}"),
+            (
+                "Tasa Oficial BCV",
+                f"{tasa_bcv:,.4f} Bs/USD" if tasa_bcv else "No disponible"
+            ),
+        ]
+
+        for idx, (titulo, valor) in enumerate(metricas):
+            tarjeta = tk.Frame(
+                frame_tarjetas,
+                bg=self.colores["blanco_tarjeta"],
+                highlightbackground=self.colores["oro"],
+                highlightthickness=1,
+                bd=0
+            )
+            tarjeta.grid(row=0, column=idx, padx=5, pady=3, sticky="nsew")
+            frame_tarjetas.grid_columnconfigure(idx, weight=1)
+
+            tk.Label(
+                tarjeta,
+                text=titulo,
+                fg="#777777",
+                bg=self.colores["blanco_tarjeta"],
+                font=("Arial", 9, "bold")
+            ).pack(pady=(9, 2), padx=7)
+
+            tk.Label(
+                tarjeta,
+                text=valor,
+                fg=self.colores["sidebar"],
+                bg=self.colores["blanco_tarjeta"],
+                font=("Arial", 13, "bold")
+            ).pack(pady=(0, 9), padx=7)
+
+        # Línea informativa secundaria.
+        info = tk.Frame(panel, bg=self.colores["fondo_main"])
+        info.pack(fill="x", padx=30, pady=(0, 8))
+
+        tk.Label(
+            info,
+            text=f"Cobrado este mes: $ {cobrado_mes:,.2f}",
+            bg=self.colores["fondo_main"],
+            fg=self.colores["texto_oscuro"],
+            font=("Arial", 9, "bold")
+        ).pack(side="left")
+
+
+        # ============================================================
+        # CUERPO: GRÁFICO + ACTIVIDAD RECIENTE
+        # ============================================================
+        cuerpo = tk.Frame(panel, bg=self.colores["fondo_main"])
+        cuerpo.pack(fill="both", expand=True, padx=25, pady=(0, 15))
+        cuerpo.grid_columnconfigure(0, weight=3)
+        cuerpo.grid_columnconfigure(1, weight=2)
+        cuerpo.grid_rowconfigure(0, weight=1)
+
+        # -------- Gráfico real --------
+        frame_grafico = tk.Frame(
+            cuerpo,
+            bg=self.colores["blanco_tarjeta"],
+            highlightbackground="#d9d4c8",
+            highlightthickness=1
+        )
+        frame_grafico.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        tk.Label(
+            frame_grafico,
+            text="📊 Facturación real de los últimos 6 meses (USD)",
+            bg=self.colores["blanco_tarjeta"],
+            fg=self.colores["sidebar"],
+            font=("Arial", 11, "bold")
+        ).pack(anchor="w", padx=15, pady=(10, 4))
+
+        if not meses_grafico:
+            meses_grafico = ["—"]
+            ingresos_grafico = [0]
+
         figura = Figure(figsize=(6, 3), dpi=100)
         eje = figura.add_subplot(111)
-        
-        meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul']
-        valores_ingresos = [1200, 2400, 1850, 3100, 2900, 4200, max(ventas_mes, 1500)]
-        
-        eje.plot(meses, valores_ingresos, marker='o', color=self.colores["sidebar"], linewidth=2, label="Ventas Realizadas")
-        eje.fill_between(meses, valores_ingresos, color=self.colores["sidebar"], alpha=0.1)
-        eje.set_facecolor('#fafafa')
-        eje.grid(True, linestyle='--', alpha=0.5)
-        
+        eje.plot(
+            meses_grafico,
+            ingresos_grafico,
+            marker="o",
+            color=self.colores["sidebar"],
+            linewidth=2
+        )
+        eje.fill_between(
+            meses_grafico,
+            ingresos_grafico,
+            color=self.colores["sidebar"],
+            alpha=0.08
+        )
+        eje.set_ylabel("USD")
+        eje.grid(True, linestyle="--", alpha=0.35)
+        figura.tight_layout()
+
         canvas = FigureCanvasTkAgg(figura, master=frame_grafico)
         canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True, padx=15, pady=(0, 15))
-        
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        # -------- Actividad reciente --------
+        frame_actividad = tk.Frame(
+            cuerpo,
+            bg=self.colores["blanco_tarjeta"],
+            highlightbackground="#d9d4c8",
+            highlightthickness=1
+        )
+        frame_actividad.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        tk.Label(
+            frame_actividad,
+            text="Actividad reciente",
+            bg=self.colores["blanco_tarjeta"],
+            fg=self.colores["sidebar"],
+            font=("Arial", 11, "bold")
+        ).pack(anchor="w", padx=15, pady=(10, 6))
+
+        tk.Label(
+            frame_actividad,
+            text="Últimos clientes",
+            bg=self.colores["blanco_tarjeta"],
+            fg=self.colores["texto_oscuro"],
+            font=("Arial", 9, "bold")
+        ).pack(anchor="w", padx=15, pady=(2, 3))
+
+        if clientes_recientes:
+            for codigo, nombre, servicio, estado_cliente in clientes_recientes:
+                fila = tk.Frame(frame_actividad, bg=self.colores["blanco_tarjeta"])
+                fila.pack(fill="x", padx=15, pady=2)
+
+                tk.Label(
+                    fila,
+                    text=f"{codigo or '—'}  {nombre}",
+                    bg=self.colores["blanco_tarjeta"],
+                    fg=self.colores["texto_oscuro"],
+                    font=("Arial", 8, "bold"),
+                    anchor="w"
+                ).pack(fill="x")
+
+                tk.Label(
+                    fila,
+                    text=f"{servicio or 'Sin servicio'} · {estado_cliente or 'Activo'}",
+                    bg=self.colores["blanco_tarjeta"],
+                    fg="#777777",
+                    font=("Arial", 8),
+                    anchor="w"
+                ).pack(fill="x")
+        else:
+            tk.Label(
+                frame_actividad,
+                text="No hay clientes registrados.",
+                bg=self.colores["blanco_tarjeta"],
+                fg="#777777",
+                font=("Arial", 8)
+            ).pack(anchor="w", padx=15)
+
+        ttk.Separator(frame_actividad, orient="horizontal").pack(
+            fill="x", padx=15, pady=8
+        )
+
+        tk.Label(
+            frame_actividad,
+            text="Últimas operaciones",
+            bg=self.colores["blanco_tarjeta"],
+            fg=self.colores["texto_oscuro"],
+            font=("Arial", 9, "bold")
+        ).pack(anchor="w", padx=15, pady=(0, 3))
+
+        if operaciones_recientes:
+            for cliente, servicio, total, estado, fecha in operaciones_recientes:
+                fila = tk.Frame(frame_actividad, bg=self.colores["blanco_tarjeta"])
+                fila.pack(fill="x", padx=15, pady=2)
+
+                tk.Label(
+                    fila,
+                    text=f"{cliente} · $ {float(total or 0):,.2f}",
+                    bg=self.colores["blanco_tarjeta"],
+                    fg=self.colores["texto_oscuro"],
+                    font=("Arial", 8, "bold"),
+                    anchor="w"
+                ).pack(fill="x")
+
+                tk.Label(
+                    fila,
+                    text=f"{servicio} · {estado} · {fecha}",
+                    bg=self.colores["blanco_tarjeta"],
+                    fg="#777777",
+                    font=("Arial", 8),
+                    anchor="w",
+                    wraplength=350,
+                    justify="left"
+                ).pack(fill="x")
+        else:
+            tk.Label(
+                frame_actividad,
+                text="No hay operaciones registradas.",
+                bg=self.colores["blanco_tarjeta"],
+                fg="#777777",
+                font=("Arial", 8)
+            ).pack(anchor="w", padx=15)
 
     def mostrar_clientes(self):
-        panel = self.crear_panel_principal("Gestión de Clientes y Contabilidad")
+        panel = self.crear_panel_principal("Gestión de Clientes")
         
         # Barra superior dividida en dos filas para evitar que los botones se solapen.
         # Fila 1: búsqueda y filtros.
@@ -620,6 +1469,8 @@ class DashboardSGC:
             command=self.eliminar_cliente_bd
         )
         btn_eliminar.pack(side="right", padx=5)
+        if not self._es_administrador():
+            btn_eliminar.pack_forget()
 
         btn_editar = tk.Button(
             acciones_bar,
@@ -680,9 +1531,19 @@ class DashboardSGC:
             for item in self.tabla_clientes.get_children():
                 ws.append(self.tabla_clientes.item(item, 'values'))
             wb.save(path)
-            messagebox.showinfo('Exportar Excel', f'Clientes exportados con éxito a:\n{path}')
+            self._mensaje_corporativo(
+                "Exportación completada",
+                "El directorio de clientes fue exportado correctamente a Excel.",
+                tipo="exito",
+                detalle=path
+            )
         except Exception as e:
-            messagebox.showerror('Error', f'No se pudo exportar a Excel: {e}')
+            self._mensaje_corporativo(
+                "No se pudo exportar",
+                "Ocurrió un problema al generar el archivo Excel.",
+                tipo="error",
+                detalle=str(e)
+            )
 
     def exportar_clientes_pdf(self):
         try:
@@ -718,9 +1579,19 @@ class DashboardSGC:
                     c.drawString(x, y, str(valor))
                 y -= 18
             c.save()
-            messagebox.showinfo('Exportar PDF', f'Clientes exportados con éxito a:\n{path}')
+            self._mensaje_corporativo(
+                "Exportación completada",
+                "El directorio de clientes fue exportado correctamente a PDF.",
+                tipo="exito",
+                detalle=path
+            )
         except Exception as e:
-            messagebox.showerror('Error', f'No se pudo exportar a PDF: {e}')
+            self._mensaje_corporativo(
+                "No se pudo exportar",
+                "Ocurrió un problema al generar el archivo PDF.",
+                tipo="error",
+                detalle=str(e)
+            )
 
     def ordenar_columnas_clientes(self):
         try:
@@ -734,9 +1605,18 @@ class DashboardSGC:
                 self.tabla_clientes.move(k, '', index)
             self.orden_cliente_asc = not orden
             direccion = 'ascendente' if orden else 'descendente'
-            messagebox.showinfo('Ordenar columnas', f'Tabla ordenada por "{columna}" {direccion}.')
+            self._mensaje_corporativo(
+                "Tabla ordenada",
+                f'La tabla fue ordenada por "{columna}" en orden {direccion}.',
+                tipo="info"
+            )
         except Exception as e:
-            messagebox.showerror('Error', f'No se pudo ordenar la tabla: {e}')
+            self._mensaje_corporativo(
+                "No se pudo ordenar",
+                "Ocurrió un problema al reorganizar la tabla.",
+                tipo="error",
+                detalle=str(e)
+            )
 
     def actualizar_tabla_clientes(self):
         """Actualiza el directorio de clientes aplicando filtros en tiempo real."""
@@ -845,116 +1725,248 @@ class DashboardSGC:
         return False
 
     def configurar_parametros_financieros(self):
+
+        if not self._requiere_administrador(
+            "cambiar IVA, IGTF o sus reglas de aplicación"
+        ):
+            return
+
         try:
             cfg = self._obtener_configuracion_financiera()
         except Exception as e:
-            messagebox.showerror("Error", f"No se pudo cargar la configuración financiera: {e}")
+            self._mensaje_corporativo(
+                "Configuración no disponible",
+                "No fue posible cargar los parámetros financieros.",
+                tipo="error",
+                detalle=str(e),
+            )
             return
 
-        modal = tk.Toplevel(self.root)
-        modal.title("Configuración financiera")
-        modal.geometry("540x480")
-        modal.configure(bg=self.colores["fondo_main"])
-        modal.transient(self.root)
-        modal.grab_set()
-        modal.resizable(False, False)
+        modal, cuerpo = self._crear_modal_corporativo(
+            "Configuración financiera",
+            "Parámetros aplicados a nuevas operaciones",
+            ancho=620,
+            alto=530,
+            icono="⚙",
+        )
+
+        form = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        form.pack(fill="both", expand=True)
+        form.grid_columnconfigure(1, weight=1)
 
         tk.Label(
-            modal,
-            text="Parámetros financieros",
+            form,
+            text="IVA (%)",
             bg=self.colores["fondo_main"],
             fg=self.colores["sidebar"],
-            font=("Arial", 15, "bold")
-        ).pack(pady=(22, 6))
+            font=("Arial", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w", padx=(0, 18), pady=10)
 
-        tk.Label(
-            modal,
-            text="Estas tasas y reglas se aplican a nuevas operaciones.",
-            bg=self.colores["fondo_main"],
-            fg=self.colores["texto_oscuro"],
-            font=("Arial", 9, "italic")
-        ).pack(pady=(0, 16))
+        marco_iva = tk.Frame(
+            form,
+            bg="white",
+            highlightbackground="#d9d1c7",
+            highlightthickness=1,
+        )
+        marco_iva.grid(row=0, column=1, sticky="ew", pady=8)
 
-        frame = tk.Frame(modal, bg=self.colores["fondo_main"])
-        frame.pack(fill="x", padx=35)
-
-        tk.Label(frame, text="IVA (%)", bg=self.colores["fondo_main"], font=("Arial", 10, "bold")).grid(row=0, column=0, sticky="w", pady=8)
-        ent_iva = tk.Entry(frame, width=16)
+        ent_iva = tk.Entry(
+            marco_iva,
+            font=("Arial", 11),
+            relief="flat",
+            bd=0,
+        )
+        ent_iva.pack(fill="x", padx=10, pady=8)
         ent_iva.insert(0, str(cfg["iva_pct"]))
-        ent_iva.grid(row=0, column=1, sticky="w", pady=8)
-
-        tk.Label(frame, text="IGTF (%)", bg=self.colores["fondo_main"], font=("Arial", 10, "bold")).grid(row=1, column=0, sticky="w", pady=8)
-        ent_igtf = tk.Entry(frame, width=16)
-        ent_igtf.insert(0, str(cfg["igtf_pct"]))
-        ent_igtf.grid(row=1, column=1, sticky="w", pady=8)
 
         tk.Label(
-            frame,
-            text="Aplicar IGTF según método de pago:",
+            form,
+            text="IGTF (%)",
             bg=self.colores["fondo_main"],
             fg=self.colores["sidebar"],
-            font=("Arial", 10, "bold")
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(18, 8))
+            font=("Arial", 10, "bold"),
+        ).grid(row=1, column=0, sticky="w", padx=(0, 18), pady=10)
+
+        marco_igtf = tk.Frame(
+            form,
+            bg="white",
+            highlightbackground="#d9d1c7",
+            highlightthickness=1,
+        )
+        marco_igtf.grid(row=1, column=1, sticky="ew", pady=8)
+
+        ent_igtf = tk.Entry(
+            marco_igtf,
+            font=("Arial", 11),
+            relief="flat",
+            bd=0,
+        )
+        ent_igtf.pack(fill="x", padx=10, pady=8)
+        ent_igtf.insert(0, str(cfg["igtf_pct"]))
+
+        tk.Label(
+            form,
+            text="Aplicar IGTF en:",
+            bg=self.colores["fondo_main"],
+            fg=self.colores["sidebar"],
+            font=("Arial", 10, "bold"),
+        ).grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(20, 8),
+        )
 
         var_efectivo = tk.BooleanVar(value=bool(cfg["igtf_efectivo"]))
-        var_transferencia = tk.BooleanVar(value=bool(cfg["igtf_transferencia"]))
-        var_pago_movil = tk.BooleanVar(value=bool(cfg["igtf_pago_movil"]))
+        var_transferencia = tk.BooleanVar(
+            value=bool(cfg["igtf_transferencia"])
+        )
+        var_pago_movil = tk.BooleanVar(
+            value=bool(cfg["igtf_pago_movil"])
+        )
 
-        tk.Checkbutton(frame, text="Efectivo", variable=var_efectivo, bg=self.colores["fondo_main"]).grid(row=3, column=0, columnspan=2, sticky="w", pady=4)
-        tk.Checkbutton(frame, text="Transferencia", variable=var_transferencia, bg=self.colores["fondo_main"]).grid(row=4, column=0, columnspan=2, sticky="w", pady=4)
-        tk.Checkbutton(frame, text="Pago Móvil", variable=var_pago_movil, bg=self.colores["fondo_main"]).grid(row=5, column=0, columnspan=2, sticky="w", pady=4)
+        opciones = tk.Frame(
+            form,
+            bg="white",
+            highlightbackground="#ddd5c8",
+            highlightthickness=1,
+        )
+        opciones.grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(0, 8),
+        )
+
+        for texto_op, variable in [
+            ("Efectivo", var_efectivo),
+            ("Transferencia", var_transferencia),
+            ("Pago Móvil", var_pago_movil),
+        ]:
+            tk.Checkbutton(
+                opciones,
+                text=texto_op,
+                variable=variable,
+                bg="white",
+                activebackground="white",
+                fg=self.colores["texto_oscuro"],
+                selectcolor="white",
+                font=("Arial", 10),
+                padx=10,
+                pady=7,
+            ).pack(fill="x", anchor="w")
+
+        tk.Label(
+            form,
+            text=(
+                "Los cambios afectan nuevas operaciones. "
+                "Los montos históricos registrados no se recalculan."
+            ),
+            bg=self.colores["fondo_main"],
+            fg="#766b6d",
+            font=("Arial", 9),
+            wraplength=530,
+            justify="left",
+        ).grid(
+            row=4,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(12, 0),
+        )
 
         def guardar():
             try:
                 iva = float(ent_iva.get().strip().replace(",", "."))
                 igtf = float(ent_igtf.get().strip().replace(",", "."))
+
                 if not (0 <= iva <= 100 and 0 <= igtf <= 100):
                     raise ValueError
+
             except ValueError:
-                messagebox.showwarning("Valores inválidos", "Las tasas deben ser números entre 0 y 100.", parent=modal)
+                self._mensaje_corporativo(
+                    "Valores inválidos",
+                    "Las tasas deben ser números entre 0 y 100.",
+                    tipo="advertencia",
+                )
                 return
 
             try:
                 conn = obtener_conexion()
                 cur = conn.cursor()
-                cur.execute("""
+                cur.execute(
+                    """
                     UPDATE configuracion_financiera
                     SET iva_pct = ?, igtf_pct = ?,
-                        igtf_efectivo = ?, igtf_transferencia = ?, igtf_pago_movil = ?
+                        igtf_efectivo = ?, igtf_transferencia = ?,
+                        igtf_pago_movil = ?
                     WHERE id = 1
-                """, (
-                    iva, igtf,
-                    1 if var_efectivo.get() else 0,
-                    1 if var_transferencia.get() else 0,
-                    1 if var_pago_movil.get() else 0
-                ))
+                    """,
+                    (
+                        iva,
+                        igtf,
+                        1 if var_efectivo.get() else 0,
+                        1 if var_transferencia.get() else 0,
+                        1 if var_pago_movil.get() else 0,
+                    ),
+                )
                 conn.commit()
                 conn.close()
 
                 registrar_accion(
                     getattr(self, "usuario_autenticado", "Sistema"),
                     "ACTUALIZÓ CONFIGURACIÓN FINANCIERA",
-                    f"IVA {iva:.2f}% | IGTF {igtf:.2f}%."
+                    f"IVA {iva:.2f}% | IGTF {igtf:.2f}%.",
                 )
 
-                messagebox.showinfo("Guardado", "Configuración financiera actualizada.", parent=modal)
                 modal.destroy()
                 self.mostrar_gestion_costos()
 
+                self._mensaje_corporativo(
+                    "Configuración actualizada",
+                    "Los nuevos parámetros financieros fueron guardados.",
+                    tipo="exito",
+                    detalle=f"IVA: {iva:.2f}%\nIGTF: {igtf:.2f}%",
+                )
+
             except Exception as e:
-                messagebox.showerror("Error", f"No se pudo guardar: {e}", parent=modal)
+                self._mensaje_corporativo(
+                    "No se pudo guardar",
+                    "Ocurrió un problema al actualizar la configuración.",
+                    tipo="error",
+                    detalle=str(e),
+                )
+
+        botones = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        botones.pack(fill="x", pady=(18, 0))
 
         tk.Button(
-            modal,
+            botones,
+            text="Cancelar",
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=20,
+            pady=8,
+            command=modal.destroy,
+        ).pack(side="right")
+
+        tk.Button(
+            botones,
             text="Guardar configuración",
             bg=self.colores["sidebar"],
             fg="white",
             font=("Arial", 10, "bold"),
             relief="flat",
-            padx=18,
+            padx=20,
             pady=8,
-            command=guardar
-        ).pack(pady=24)
+            command=guardar,
+        ).pack(side="right", padx=(0, 8))
+
+        ent_iva.focus_set()
 
     def mostrar_gestion_costos(self):
         panel = self.crear_panel_principal("Gestión de Costos y Cuentas por Cobrar")
@@ -964,8 +1976,11 @@ class DashboardSGC:
         except Exception:
             cfg = {"iva_pct": 16.0, "igtf_pct": 3.0}
 
+        # =========================
+        # CABECERA
+        # =========================
         cabecera = tk.Frame(panel, bg=self.colores["fondo_main"])
-        cabecera.pack(fill="x", padx=25, pady=(0, 10))
+        cabecera.pack(fill="x", padx=25, pady=(0, 8))
 
         tk.Label(
             cabecera,
@@ -975,7 +1990,7 @@ class DashboardSGC:
             font=("Arial", 10, "italic")
         ).pack(side="left")
 
-        tk.Button(
+        btn_config_tasas = tk.Button(
             cabecera,
             text="⚙ Configurar tasas",
             bg=self.colores["botones_menu"],
@@ -984,44 +1999,99 @@ class DashboardSGC:
             relief="flat",
             padx=12,
             command=self.configurar_parametros_financieros
-        ).pack(side="right")
+        )
+        btn_config_tasas.pack(side="right")
+        if not self._es_administrador():
+            btn_config_tasas.pack_forget()
 
-        try:
-            conn = obtener_conexion()
-            cur = conn.cursor()
+        # =========================
+        # FILTROS
+        # =========================
+        filtros = tk.Frame(panel, bg=self.colores["fondo_main"])
+        filtros.pack(fill="x", padx=25, pady=(0, 8))
 
-            cur.execute("SELECT COUNT(*), COALESCE(SUM(total_usd),0), COALESCE(SUM(total_bs),0) FROM solicitudes_servicio")
-            total_ops, total_usd, total_bs = cur.fetchone()
+        tk.Label(
+            filtros, text="Cliente:",
+            bg=self.colores["fondo_main"],
+            fg=self.colores["sidebar"],
+            font=("Arial", 9, "bold")
+        ).pack(side="left")
 
-            cur.execute("""
-                SELECT COALESCE(SUM(total_usd),0)
-                FROM solicitudes_servicio
-                WHERE COALESCE(estado_pago,'Pendiente') = 'Pendiente'
-            """)
-            por_cobrar = float(cur.fetchone()[0] or 0)
+        combo_cliente = ttk.Combobox(filtros, state="readonly", width=18)
+        combo_cliente.pack(side="left", padx=(5, 10))
 
-            cur.execute("""
-                SELECT COALESCE(SUM(total_usd),0)
-                FROM solicitudes_servicio
-                WHERE COALESCE(estado_pago,'Pendiente') = 'Pagado'
-            """)
-            cobrado = float(cur.fetchone()[0] or 0)
+        tk.Label(
+            filtros, text="Servicio:",
+            bg=self.colores["fondo_main"],
+            fg=self.colores["sidebar"],
+            font=("Arial", 9, "bold")
+        ).pack(side="left")
 
-            conn.close()
-        except Exception:
-            total_ops, total_usd, total_bs, por_cobrar, cobrado = 0, 0, 0, 0, 0
+        combo_servicio = ttk.Combobox(filtros, state="readonly", width=20)
+        combo_servicio.pack(side="left", padx=(5, 10))
 
+        tk.Label(
+            filtros, text="Estado:",
+            bg=self.colores["fondo_main"],
+            fg=self.colores["sidebar"],
+            font=("Arial", 9, "bold")
+        ).pack(side="left")
+
+        combo_estado = ttk.Combobox(
+            filtros,
+            state="readonly",
+            width=12,
+            values=["Todos", "Pendiente", "Pagado"]
+        )
+        combo_estado.set("Todos")
+        combo_estado.pack(side="left", padx=(5, 10))
+
+        tk.Label(
+            filtros, text="Desde:",
+            bg=self.colores["fondo_main"],
+            fg=self.colores["sidebar"],
+            font=("Arial", 9, "bold")
+        ).pack(side="left")
+
+        entry_desde = tk.Entry(filtros, width=11)
+        entry_desde.pack(side="left", padx=(5, 6))
+        entry_desde.insert(0, "")
+
+        tk.Label(
+            filtros, text="Hasta:",
+            bg=self.colores["fondo_main"],
+            fg=self.colores["sidebar"],
+            font=("Arial", 9, "bold")
+        ).pack(side="left")
+
+        entry_hasta = tk.Entry(filtros, width=11)
+        entry_hasta.pack(side="left", padx=(5, 6))
+        entry_hasta.insert(0, "")
+
+        tk.Label(
+            panel,
+            text="Fechas opcionales en formato AAAA-MM-DD.",
+            bg=self.colores["fondo_main"],
+            fg="#777",
+            font=("Arial", 8, "italic")
+        ).pack(anchor="e", padx=30, pady=(0, 4))
+
+        # =========================
+        # TARJETAS / MÉTRICAS
+        # =========================
         tarjetas = tk.Frame(panel, bg=self.colores["fondo_main"])
-        tarjetas.pack(fill="x", padx=25, pady=(0, 12))
+        tarjetas.pack(fill="x", padx=25, pady=(0, 10))
 
-        metricas = [
-            ("Operaciones", str(total_ops)),
-            ("Facturado USD", f"$ {float(total_usd):,.2f}"),
-            ("Cobrado USD", f"$ {cobrado:,.2f}"),
-            ("Por cobrar USD", f"$ {por_cobrar:,.2f}"),
+        valores_metricas = {}
+
+        titulos = [
+            ("Operaciones", "operaciones"),
+            ("Facturado USD", "facturado"),
+            ("Cobrado USD", "cobrado"),
+            ("Por cobrar USD", "por_cobrar"),
         ]
 
-        for idx, (titulo, valor) in enumerate(metricas):
+        for idx, (titulo, clave) in enumerate(titulos):
             tarjeta = tk.Frame(
                 tarjetas,
                 bg=self.colores["blanco_tarjeta"],
@@ -1031,11 +2101,35 @@ class DashboardSGC:
             tarjeta.grid(row=0, column=idx, padx=5, sticky="nsew")
             tarjetas.grid_columnconfigure(idx, weight=1)
 
-            tk.Label(tarjeta, text=titulo, bg=self.colores["blanco_tarjeta"], fg="#777", font=("Arial", 9, "bold")).pack(pady=(8, 2), padx=8)
-            tk.Label(tarjeta, text=valor, bg=self.colores["blanco_tarjeta"], fg=self.colores["sidebar"], font=("Arial", 14, "bold")).pack(pady=(0, 8), padx=8)
+            tk.Label(
+                tarjeta,
+                text=titulo,
+                bg=self.colores["blanco_tarjeta"],
+                fg="#777",
+                font=("Arial", 9, "bold")
+            ).pack(pady=(8, 2), padx=8)
 
-        botones = tk.Frame(panel, bg=self.colores["fondo_main"])
-        botones.pack(fill="x", padx=25, pady=(0, 8))
+            lbl_valor = tk.Label(
+                tarjeta,
+                text="0",
+                bg=self.colores["blanco_tarjeta"],
+                fg=self.colores["sidebar"],
+                font=("Arial", 14, "bold")
+            )
+            lbl_valor.pack(pady=(0, 8), padx=8)
+            valores_metricas[clave] = lbl_valor
+
+        # =========================
+        # BARRA DE ACCIONES
+        # =========================
+        acciones = tk.Frame(panel, bg=self.colores["fondo_main"])
+        acciones.pack(fill="x", padx=25, pady=(0, 7))
+
+        # =========================
+        # TABLA
+        # =========================
+        tabla_frame = tk.Frame(panel, bg=self.colores["fondo_main"])
+        tabla_frame.pack(fill="both", expand=True, padx=25, pady=(0, 10))
 
         columnas = (
             "ID", "Fecha", "Código", "Cliente", "Servicio", "Base USD",
@@ -1043,89 +2137,466 @@ class DashboardSGC:
             "Método", "Estado pago"
         )
 
-        tabla = ttk.Treeview(panel, columns=columnas, show="headings", height=13)
+        tabla = ttk.Treeview(
+            tabla_frame,
+            columns=columnas,
+            show="headings",
+            height=13
+        )
 
         for col in columnas:
             tabla.heading(col, text=col)
-            if col in ("Cliente", "Servicio"):
-                tabla.column(col, width=180, anchor="w")
+
+            if col == "Cliente":
+                tabla.column(col, width=160, anchor="w")
+            elif col == "Servicio":
+                tabla.column(col, width=190, anchor="w")
             elif col == "Método":
                 tabla.column(col, width=105, anchor="center")
+            elif col in ("Código", "Estado pago"):
+                tabla.column(col, width=95, anchor="center")
             else:
                 tabla.column(col, width=85, anchor="center")
 
-        sb = ttk.Scrollbar(panel, orient="vertical", command=tabla.yview)
-        tabla.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y", pady=8, padx=(0, 18))
-        tabla.pack(fill="both", expand=True, padx=(25, 0), pady=8)
+        scroll_y = ttk.Scrollbar(tabla_frame, orient="vertical", command=tabla.yview)
+        scroll_x = ttk.Scrollbar(tabla_frame, orient="horizontal", command=tabla.xview)
+        tabla.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
 
-        try:
-            conn = obtener_conexion()
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT
-                    ss.id,
-                    COALESCE(ss.fecha_solicitud,''),
-                    COALESCE(c.codigo,''),
-                    c.nombre,
-                    s.nombre_servicio,
-                    ss.monto,
-                    ss.iva_usd,
-                    ss.igtf_usd,
-                    ss.total_usd,
-                    ss.tasa_bcv,
-                    ss.total_bs,
-                    COALESCE(ss.metodo_pago,''),
-                    COALESCE(ss.estado_pago,'Pendiente')
-                FROM solicitudes_servicio ss
-                INNER JOIN clientes c ON c.id = ss.cliente_id
-                INNER JOIN servicios s ON s.id = ss.servicio_id
-                ORDER BY ss.id DESC
-            """)
+        scroll_y.pack(side="right", fill="y")
+        scroll_x.pack(side="bottom", fill="x")
+        tabla.pack(fill="both", expand=True)
 
-            for f in cur.fetchall():
-                tabla.insert("", "end", values=(
-                    f[0], f[1], f[2], f[3], f[4],
-                    f"$ {float(f[5] or 0):,.2f}",
-                    f"$ {float(f[6] or 0):,.2f}",
-                    f"$ {float(f[7] or 0):,.2f}",
-                    f"$ {float(f[8] or 0):,.2f}",
-                    f"{float(f[9] or 0):.4f}",
-                    f"Bs. {float(f[10] or 0):,.2f}",
-                    f[11], f[12]
-                ))
+        # Guarda los datos crudos de cada fila cargada.
+        datos_operaciones = {}
 
-            conn.close()
+        def validar_fecha(valor):
+            valor = (valor or "").strip()
+            if not valor:
+                return None
 
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudo cargar Gestión de Costos: {e}")
+            try:
+                datetime.datetime.strptime(valor, "%Y-%m-%d")
+                return valor
+            except ValueError:
+                raise ValueError("Use el formato AAAA-MM-DD para las fechas.")
 
-        def cambiar_estado(nuevo_estado):
-            sel = tabla.selection()
+        def construir_where():
+            condiciones = []
+            params = []
 
-            if not sel:
-                messagebox.showwarning("Seleccione una operación", "Seleccione una operación financiera.")
+            if combo_cliente.get() and combo_cliente.get() != "Todos":
+                condiciones.append("c.nombre = ?")
+                params.append(combo_cliente.get())
+
+            if combo_servicio.get() and combo_servicio.get() != "Todos":
+                condiciones.append("s.nombre_servicio = ?")
+                params.append(combo_servicio.get())
+
+            if combo_estado.get() and combo_estado.get() != "Todos":
+                condiciones.append("COALESCE(ss.estado_pago,'Pendiente') = ?")
+                params.append(combo_estado.get())
+
+            desde = validar_fecha(entry_desde.get())
+            hasta = validar_fecha(entry_hasta.get())
+
+            if desde:
+                condiciones.append("date(ss.fecha_solicitud) >= date(?)")
+                params.append(desde)
+
+            if hasta:
+                condiciones.append("date(ss.fecha_solicitud) <= date(?)")
+                params.append(hasta)
+
+            where = ""
+            if condiciones:
+                where = " WHERE " + " AND ".join(condiciones)
+
+            return where, params
+
+        def cargar_filtros():
+            try:
+                conn = obtener_conexion()
+                cur = conn.cursor()
+
+                cur.execute(
+                    """
+                    SELECT DISTINCT nombre
+                    FROM clientes
+                    WHERE nombre IS NOT NULL
+                      AND TRIM(nombre) != ''
+                    ORDER BY nombre COLLATE NOCASE
+                    """
+                )
+                clientes = [fila[0] for fila in cur.fetchall()]
+
+                cur.execute(
+                    """
+                    SELECT nombre_servicio
+                    FROM servicios
+                    WHERE nombre_servicio IS NOT NULL
+                      AND TRIM(nombre_servicio) != ''
+                    ORDER BY nombre_servicio COLLATE NOCASE
+                    """
+                )
+                servicios = [fila[0] for fila in cur.fetchall()]
+
+                conn.close()
+
+                combo_cliente["values"] = ["Todos"] + clientes
+                combo_servicio["values"] = ["Todos"] + servicios
+
+                combo_cliente.set("Todos")
+                combo_servicio.set("Todos")
+
+            except Exception as e:
+                self._mensaje_corporativo(
+                    "Filtros no disponibles",
+                    "No se pudieron cargar los filtros de Gestión de Costos.",
+                    tipo="error",
+                    detalle=str(e)
+                )
+
+        def cargar_tabla():
+            try:
+                where, params = construir_where()
+            except ValueError as e:
+                self._mensaje_corporativo(
+                    "Fecha inválida",
+                    str(e),
+                    tipo="advertencia"
+                )
                 return
 
-            valores = tabla.item(sel[0], "values")
-            operacion_id = int(valores[0])
+            for item in tabla.get_children():
+                tabla.delete(item)
+
+            datos_operaciones.clear()
+
+            try:
+                conn = obtener_conexion()
+                cur = conn.cursor()
+
+                cur.execute(
+                    f"""
+                    SELECT
+                        ss.id,
+                        COALESCE(ss.fecha_solicitud,''),
+                        COALESCE(c.codigo,''),
+                        c.nombre,
+                        s.nombre_servicio,
+                        COALESCE(ss.monto,0),
+                        COALESCE(ss.iva_usd,0),
+                        COALESCE(ss.igtf_usd,0),
+                        COALESCE(ss.total_usd,0),
+                        COALESCE(ss.tasa_bcv,0),
+                        COALESCE(ss.total_bs,0),
+                        COALESCE(ss.metodo_pago,''),
+                        COALESCE(ss.estado_pago,'Pendiente'),
+                        COALESCE(ss.fecha_pago,''),
+                        COALESCE(ss.observaciones,''),
+                        c.correo,
+                        c.telefono
+                    FROM solicitudes_servicio ss
+                    INNER JOIN clientes c ON c.id = ss.cliente_id
+                    INNER JOIN servicios s ON s.id = ss.servicio_id
+                    {where}
+                    ORDER BY ss.id DESC
+                    """,
+                    params
+                )
+
+                filas = cur.fetchall()
+
+                facturado = 0.0
+                cobrado = 0.0
+                por_cobrar = 0.0
+
+                for f in filas:
+                    operacion_id = int(f[0])
+                    total = float(f[8] or 0)
+
+                    facturado += total
+
+                    if str(f[12]).lower() == "pagado":
+                        cobrado += total
+                    else:
+                        por_cobrar += total
+
+                    datos_operaciones[operacion_id] = {
+                        "id": operacion_id,
+                        "fecha": f[1],
+                        "codigo": f[2],
+                        "cliente": f[3],
+                        "servicio": f[4],
+                        "base": float(f[5] or 0),
+                        "iva": float(f[6] or 0),
+                        "igtf": float(f[7] or 0),
+                        "total_usd": total,
+                        "tasa_bcv": float(f[9] or 0),
+                        "total_bs": float(f[10] or 0),
+                        "metodo": f[11],
+                        "estado": f[12],
+                        "fecha_pago": f[13],
+                        "observaciones": f[14],
+                        "correo": f[15] or "",
+                        "telefono": f[16] or "",
+                    }
+
+                    tabla.insert(
+                        "",
+                        "end",
+                        values=(
+                            f[0], f[1], f[2], f[3], f[4],
+                            f"$ {float(f[5] or 0):,.2f}",
+                            f"$ {float(f[6] or 0):,.2f}",
+                            f"$ {float(f[7] or 0):,.2f}",
+                            f"$ {total:,.2f}",
+                            f"{float(f[9] or 0):.4f}",
+                            f"Bs. {float(f[10] or 0):,.2f}",
+                            f[11], f[12]
+                        )
+                    )
+
+                conn.close()
+
+                valores_metricas["operaciones"].config(text=str(len(filas)))
+                valores_metricas["facturado"].config(text=f"$ {facturado:,.2f}")
+                valores_metricas["cobrado"].config(text=f"$ {cobrado:,.2f}")
+                valores_metricas["por_cobrar"].config(text=f"$ {por_cobrar:,.2f}")
+
+            except Exception as e:
+                self._mensaje_corporativo(
+                    "Gestión de Costos no disponible",
+                    "No se pudieron cargar las operaciones financieras.",
+                    tipo="error",
+                    detalle=str(e)
+                )
+
+        def limpiar_filtros():
+            combo_cliente.set("Todos")
+            combo_servicio.set("Todos")
+            combo_estado.set("Todos")
+            entry_desde.delete(0, "end")
+            entry_hasta.delete(0, "end")
+            cargar_tabla()
+
+        def obtener_operacion_seleccionada():
+            seleccion = tabla.selection()
+
+            if not seleccion:
+                self._mensaje_corporativo(
+                    "Seleccione una operación",
+                    "Primero seleccione una operación financiera de la tabla.",
+                    tipo="advertencia"
+                )
+                return None
+
+            valores = tabla.item(seleccion[0], "values")
+
+            try:
+                operacion_id = int(valores[0])
+            except (ValueError, TypeError):
+                return None
+
+            return datos_operaciones.get(operacion_id)
+
+        def ver_detalle():
+            op = obtener_operacion_seleccionada()
+            if not op:
+                return
+
+            modal, cuerpo = self._crear_modal_corporativo(
+                f"Operación financiera #{op['id']}",
+                "Detalle contable y estado de la cuenta por cobrar",
+                ancho=680,
+                alto=720,
+                icono="$"
+            )
+
+            cuerpo.configure(
+                bg=self.colores["blanco_tarjeta"],
+                highlightbackground=self.colores["oro"],
+                highlightthickness=1
+            )
+
+            campos = [
+                ("Fecha solicitud", op["fecha"]),
+                ("Código cliente", op["codigo"]),
+                ("Cliente", op["cliente"]),
+                ("Correo", op["correo"]),
+                ("Teléfono", op["telefono"]),
+                ("Servicio", op["servicio"]),
+                ("Monto base", f"$ {op['base']:,.2f}"),
+                ("IVA", f"$ {op['iva']:,.2f}"),
+                ("IGTF", f"$ {op['igtf']:,.2f}"),
+                ("Total USD", f"$ {op['total_usd']:,.2f}"),
+                ("Tasa BCV", f"{op['tasa_bcv']:.4f}"),
+                ("Total Bs.", f"Bs. {op['total_bs']:,.2f}"),
+                ("Método de pago", op["metodo"]),
+                ("Estado", op["estado"]),
+                ("Fecha de pago", op["fecha_pago"] or "—"),
+            ]
+
+            for i, (etiqueta, valor) in enumerate(campos):
+                tk.Label(
+                    cuerpo,
+                    text=f"{etiqueta}:",
+                    bg=self.colores["blanco_tarjeta"],
+                    fg=self.colores["sidebar"],
+                    font=("Arial", 9, "bold")
+                ).grid(row=i, column=0, sticky="nw", padx=(15, 12), pady=4)
+
+                tk.Label(
+                    cuerpo,
+                    text=str(valor),
+                    bg=self.colores["blanco_tarjeta"],
+                    fg=self.colores["texto_oscuro"],
+                    font=("Arial", 9),
+                    wraplength=360,
+                    justify="left"
+                ).grid(row=i, column=1, sticky="nw", padx=(0, 15), pady=4)
+
+            fila_obs = len(campos)
+
+            tk.Label(
+                cuerpo,
+                text="Observaciones:",
+                bg=self.colores["blanco_tarjeta"],
+                fg=self.colores["sidebar"],
+                font=("Arial", 9, "bold")
+            ).grid(row=fila_obs, column=0, sticky="nw", padx=(15, 12), pady=(8, 4))
+
+            txt_obs = tk.Text(
+                cuerpo,
+                width=45,
+                height=5,
+                wrap="word"
+            )
+            txt_obs.insert("1.0", op["observaciones"])
+            txt_obs.grid(row=fila_obs, column=1, sticky="w", padx=(0, 15), pady=(8, 8))
+
+            def guardar_observacion():
+                observacion = txt_obs.get("1.0", "end").strip()
+
+                try:
+                    conn = obtener_conexion()
+                    cur = conn.cursor()
+                    cur.execute(
+                        """
+                        UPDATE solicitudes_servicio
+                        SET observaciones = ?
+                        WHERE id = ?
+                        """,
+                        (observacion, op["id"])
+                    )
+                    conn.commit()
+                    conn.close()
+
+                    registrar_accion(
+                        getattr(self, "usuario_autenticado", "Sistema"),
+                        "ACTUALIZÓ OBSERVACIÓN FINANCIERA",
+                        f"Operación #{op['id']}."
+                    )
+
+                    self._mensaje_corporativo(
+                        "Observación guardada",
+                        "La observación fue actualizada correctamente.",
+                        tipo="exito"
+                    )
+
+                    modal.destroy()
+                    cargar_tabla()
+
+                except Exception as e:
+                    self._mensaje_corporativo(
+                        "No se pudo guardar",
+                        "Ocurrió un problema al actualizar la observación.",
+                        tipo="error",
+                        detalle=str(e)
+                    )
+
+            botones_detalle = tk.Frame(modal, bg=self.colores["fondo_main"])
+            botones_detalle.pack(pady=(0, 18))
+
+            tk.Button(
+                botones_detalle,
+                text="💾 Guardar observación",
+                bg=self.colores["sidebar"],
+                fg="white",
+                font=("Arial", 10, "bold"),
+                relief="flat",
+                padx=14,
+                pady=7,
+                command=guardar_observacion
+            ).pack(side="left", padx=5)
+
+            tk.Button(
+                botones_detalle,
+                text="Cerrar",
+                bg=self.colores["botones_menu"],
+                fg=self.colores["oro"],
+                font=("Arial", 10, "bold"),
+                relief="flat",
+                padx=14,
+                pady=7,
+                command=modal.destroy
+            ).pack(side="left", padx=5)
+
+        def cambiar_estado(nuevo_estado):
+            op = obtener_operacion_seleccionada()
+            if not op:
+                return
+
+            if op["estado"] == nuevo_estado:
+                self._mensaje_corporativo(
+                    "Sin cambios",
+                    f"La operación ya está marcada como {nuevo_estado}.",
+                    tipo="info"
+                )
+                return
+
+            texto = (
+                f"¿Desea marcar la operación #{op['id']} de "
+                f"{op['cliente']} como {nuevo_estado}?"
+            )
+
+            if not self._confirmar_corporativo(
+                "Cambiar estado de pago",
+                texto,
+                detalle=(
+                    f"Cliente: {op['cliente']}\n"
+                    f"Servicio: {op['servicio']}\n"
+                    f"Total: $ {op['total_usd']:,.2f}"
+                ),
+                texto_confirmar=f"Marcar {nuevo_estado}",
+                peligro=False
+            ):
+                return
 
             try:
                 conn = obtener_conexion()
                 cur = conn.cursor()
 
                 if nuevo_estado == "Pagado":
-                    cur.execute("""
+                    cur.execute(
+                        """
                         UPDATE solicitudes_servicio
-                        SET estado_pago = 'Pagado', fecha_pago = date('now')
+                        SET estado_pago = 'Pagado',
+                            fecha_pago = date('now')
                         WHERE id = ?
-                    """, (operacion_id,))
+                        """,
+                        (op["id"],)
+                    )
                 else:
-                    cur.execute("""
+                    cur.execute(
+                        """
                         UPDATE solicitudes_servicio
-                        SET estado_pago = 'Pendiente', fecha_pago = NULL
+                        SET estado_pago = 'Pendiente',
+                            fecha_pago = NULL
                         WHERE id = ?
-                    """, (operacion_id,))
+                        """,
+                        (op["id"],)
+                    )
 
                 conn.commit()
                 conn.close()
@@ -1133,38 +2604,274 @@ class DashboardSGC:
                 registrar_accion(
                     getattr(self, "usuario_autenticado", "Sistema"),
                     "ACTUALIZÓ ESTADO DE PAGO",
-                    f"Operación #{operacion_id}: {nuevo_estado}."
+                    f"Operación #{op['id']}: {nuevo_estado}."
                 )
 
-                self.mostrar_gestion_costos()
+                cargar_tabla()
 
             except Exception as e:
-                messagebox.showerror("Error", f"No se pudo cambiar el estado: {e}")
+                self._mensaje_corporativo(
+                    "No se pudo cambiar el estado",
+                    "Ocurrió un problema al actualizar el estado de pago.",
+                    tipo="error",
+                    detalle=str(e)
+                )
 
+        def exportar_excel():
+            if not datos_operaciones:
+                self._mensaje_corporativo(
+                    "Sin datos",
+                    "No hay operaciones visibles para exportar.",
+                    tipo="advertencia"
+                )
+                return
+
+            ruta = filedialog.asksaveasfilename(
+                title="Exportar Gestión de Costos a Excel",
+                defaultextension=".xlsx",
+                filetypes=[("Archivo Excel", "*.xlsx")]
+            )
+
+            if not ruta:
+                return
+
+            try:
+                wb = Workbook()
+                ws = wb.active
+                ws.title = "Gestión de Costos"
+
+                encabezados = [
+                    "ID", "Fecha", "Código cliente", "Cliente", "Servicio",
+                    "Base USD", "IVA USD", "IGTF USD", "Total USD",
+                    "Tasa BCV", "Total Bs.", "Método de pago",
+                    "Estado", "Fecha pago", "Observaciones"
+                ]
+                ws.append(encabezados)
+
+                for op in datos_operaciones.values():
+                    ws.append([
+                        op["id"], op["fecha"], op["codigo"], op["cliente"],
+                        op["servicio"], op["base"], op["iva"], op["igtf"],
+                        op["total_usd"], op["tasa_bcv"], op["total_bs"],
+                        op["metodo"], op["estado"], op["fecha_pago"],
+                        op["observaciones"]
+                    ])
+
+                for columna in ws.columns:
+                    ancho = 12
+                    for celda in columna:
+                        if celda.value is not None:
+                            ancho = max(ancho, min(len(str(celda.value)) + 2, 45))
+                    ws.column_dimensions[columna[0].column_letter].width = ancho
+
+                wb.save(ruta)
+
+                registrar_accion(
+                    getattr(self, "usuario_autenticado", "Sistema"),
+                    "EXPORTÓ GESTIÓN DE COSTOS",
+                    f"Exportó {len(datos_operaciones)} operaciones a Excel."
+                )
+
+                self._mensaje_corporativo(
+                    "Exportación completada",
+                    "Gestión de Costos fue exportada correctamente a Excel.",
+                    tipo="exito"
+                )
+
+            except Exception as e:
+                self._mensaje_corporativo(
+                    "No se pudo exportar",
+                    "Ocurrió un problema al generar el archivo Excel.",
+                    tipo="error",
+                    detalle=str(e)
+                )
+
+        def exportar_pdf():
+            if not datos_operaciones:
+                self._mensaje_corporativo(
+                    "Sin datos",
+                    "No hay operaciones visibles para exportar.",
+                    tipo="advertencia"
+                )
+                return
+
+            ruta = filedialog.asksaveasfilename(
+                title="Exportar Gestión de Costos a PDF",
+                defaultextension=".pdf",
+                filetypes=[("Archivo PDF", "*.pdf")]
+            )
+
+            if not ruta:
+                return
+
+            try:
+                c = canvas.Canvas(ruta, pagesize=letter)
+                ancho, alto = letter
+
+                def encabezado_pdf():
+                    c.setFont("Helvetica-Bold", 14)
+                    c.drawString(40, alto - 45, "Macilitano Consulting Group C.A.")
+                    c.setFont("Helvetica-Bold", 12)
+                    c.drawString(40, alto - 65, "Reporte de Gestión de Costos")
+                    c.setFont("Helvetica", 8)
+                    c.drawString(
+                        40, alto - 82,
+                        f"Generado: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                    )
+                    return alto - 108
+
+                y = encabezado_pdf()
+
+                for op in datos_operaciones.values():
+                    if y < 115:
+                        c.showPage()
+                        y = encabezado_pdf()
+
+                    c.setFont("Helvetica-Bold", 9)
+                    c.drawString(
+                        40, y,
+                        f"#{op['id']} | {op['cliente']} | {op['estado']}"
+                    )
+                    y -= 13
+
+                    c.setFont("Helvetica", 8)
+                    lineas = [
+                        f"Fecha: {op['fecha']} | Código: {op['codigo']}",
+                        f"Servicio: {op['servicio']}",
+                        (
+                            f"Base: ${op['base']:,.2f} | IVA: ${op['iva']:,.2f} | "
+                            f"IGTF: ${op['igtf']:,.2f} | Total: ${op['total_usd']:,.2f}"
+                        ),
+                        (
+                            f"BCV: {op['tasa_bcv']:.4f} | "
+                            f"Total Bs.: {op['total_bs']:,.2f} | "
+                            f"Método: {op['metodo']}"
+                        ),
+                    ]
+
+                    for linea in lineas:
+                        c.drawString(50, y, linea[:105])
+                        y -= 11
+
+                    y -= 7
+
+                c.save()
+
+                registrar_accion(
+                    getattr(self, "usuario_autenticado", "Sistema"),
+                    "EXPORTÓ GESTIÓN DE COSTOS",
+                    f"Exportó {len(datos_operaciones)} operaciones a PDF."
+                )
+
+                self._mensaje_corporativo(
+                    "Exportación completada",
+                    "Gestión de Costos fue exportada correctamente a PDF.",
+                    tipo="exito"
+                )
+
+            except Exception as e:
+                self._mensaje_corporativo(
+                    "No se pudo exportar",
+                    "Ocurrió un problema al generar el archivo PDF.",
+                    tipo="error",
+                    detalle=str(e)
+                )
+
+        # Acciones izquierda
         tk.Button(
-            botones,
+            acciones,
             text="✓ Marcar Pagado",
             bg=self.colores["verde_aprobar"],
             fg="white",
             font=("Arial", 10, "bold"),
             relief="flat",
-            padx=12,
+            padx=11,
+            pady=6,
             command=lambda: cambiar_estado("Pagado")
         ).pack(side="left")
 
         tk.Button(
-            botones,
+            acciones,
             text="↩ Marcar Pendiente",
             bg=self.colores["botones_menu"],
             fg=self.colores["oro"],
             font=("Arial", 10, "bold"),
             relief="flat",
-            padx=12,
+            padx=11,
+            pady=6,
             command=lambda: cambiar_estado("Pendiente")
-        ).pack(side="left", padx=8)
+        ).pack(side="left", padx=6)
+
+        tk.Button(
+            acciones,
+            text="🔎 Ver detalle",
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=11,
+            pady=6,
+            command=ver_detalle
+        ).pack(side="left", padx=6)
+
+        # Acciones derecha
+        tk.Button(
+            acciones,
+            text="📄 PDF",
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=11,
+            pady=6,
+            command=exportar_pdf
+        ).pack(side="right")
+
+        tk.Button(
+            acciones,
+            text="📗 Excel",
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=11,
+            pady=6,
+            command=exportar_excel
+        ).pack(side="right", padx=6)
+
+        tk.Button(
+            filtros,
+            text="Limpiar",
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            font=("Arial", 9, "bold"),
+            relief="flat",
+            padx=8,
+            command=limpiar_filtros
+        ).pack(side="right", padx=3)
+
+        tk.Button(
+            filtros,
+            text="Aplicar",
+            bg=self.colores["sidebar"],
+            fg="white",
+            font=("Arial", 9, "bold"),
+            relief="flat",
+            padx=8,
+            command=cargar_tabla
+        ).pack(side="right", padx=3)
+
+        # Doble clic = detalle.
+        tabla.bind("<Double-1>", lambda event: ver_detalle())
+
+        cargar_filtros()
+        cargar_tabla()
 
     # ----------------- GESTIÓN DE ASESORES -----------------
     def mostrar_asesores(self):
+
+        if not self._requiere_administrador("administrar asesores y usuarios"):
+            return
         panel = self.crear_panel_principal("Gestión de Asesores")
 
         top_bar = tk.Frame(panel, bg=self.colores["fondo_main"]) 
@@ -1216,54 +2923,100 @@ class DashboardSGC:
                 self.tabla_asesores.insert("", "end", values=tuple(fila))
             conn.close()
         except Exception as e:
-            messagebox.showerror("Error", f"No se pudieron cargar los asesores: {e}")
+            self._mensaje_corporativo(
+                "Asesores no disponibles",
+                "No se pudo cargar la lista de asesores.",
+                tipo="error",
+                detalle=str(e)
+            )
 
     def modal_agregar_asesor(self):
-        modal = tk.Toplevel(self.root)
-        modal.title("Agregar Asesor")
-        modal.geometry("520x520")
-        modal.resizable(True, True)
-        modal.transient(self.root)
-        modal.grab_set()
-        modal.focus_force()
-        modal.lift()
 
-        tk.Label(modal, text="Crear Asesor / Vincular Usuario", font=("Arial", 12, "bold")).pack(pady=10)
-        frame = tk.Frame(modal)
-        frame.pack(padx=15, pady=5, fill="both", expand=True)
-        frame.grid_columnconfigure(1, weight=1)
+        if not self._requiere_administrador("crear asesores"):
+            return
 
-        tk.Label(frame, text="Usuario (login):").grid(row=0, column=0, sticky="w", pady=4)
-        ent_user = tk.Entry(frame, width=35)
-        ent_user.grid(row=0, column=1, pady=4, sticky="ew")
+        modal, cuerpo = self._crear_modal_corporativo(
+            "Nuevo asesor",
+            "Crear perfil profesional y vincular acceso al sistema",
+            ancho=690,
+            alto=700,
+            icono="＋",
+        )
 
-        tk.Label(frame, text="Contraseña (si crea cuenta):").grid(row=1, column=0, sticky="w")
-        ent_pw = tk.Entry(frame, width=30, show='*')
-        ent_pw.grid(row=1, column=1, pady=5)
+        form = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        form.pack(fill="both", expand=True)
+        form.grid_columnconfigure(1, weight=1)
 
-        tk.Label(frame, text="Nombre completo:").grid(row=2, column=0, sticky="w")
-        ent_nombre = tk.Entry(frame, width=30)
-        ent_nombre.grid(row=2, column=1, pady=5)
+        def etiqueta(texto, fila):
+            tk.Label(
+                form,
+                text=texto,
+                bg=self.colores["fondo_main"],
+                fg=self.colores["sidebar"],
+                font=("Arial", 9, "bold"),
+            ).grid(row=fila, column=0, sticky="w", padx=(0, 16), pady=7)
 
-        tk.Label(frame, text="Correo:").grid(row=3, column=0, sticky="w")
-        ent_correo = tk.Entry(frame, width=30)
-        ent_correo.grid(row=3, column=1, pady=5)
+        def entrada(fila, ocultar=False):
+            marco = tk.Frame(
+                form,
+                bg="white",
+                highlightbackground="#d9d1c7",
+                highlightthickness=1,
+            )
+            marco.grid(row=fila, column=1, sticky="ew", pady=6)
+            e = tk.Entry(
+                marco,
+                font=("Arial", 10),
+                relief="flat",
+                bd=0,
+                show="*" if ocultar else "",
+            )
+            e.pack(fill="x", padx=10, pady=8)
+            return e
 
-        tk.Label(frame, text="Teléfono:").grid(row=4, column=0, sticky="w")
-        ent_tel = tk.Entry(frame, width=30)
-        ent_tel.grid(row=4, column=1, pady=5)
+        etiqueta("Usuario de acceso", 0)
+        ent_user = entrada(0)
 
-        tk.Label(frame, text="Especialidad:").grid(row=5, column=0, sticky="w")
-        ent_esp = tk.Entry(frame, width=30)
-        ent_esp.grid(row=5, column=1, pady=5)
+        etiqueta("Contraseña", 1)
+        ent_pw = entrada(1, ocultar=True)
 
-        tk.Label(frame, text="Fecha de contratación:").grid(row=6, column=0, sticky="w")
-        ent_fecha = tk.Entry(frame, width=30)
-        ent_fecha.grid(row=6, column=1, pady=5)
+        etiqueta("Nombre completo", 2)
+        ent_nombre = entrada(2)
 
-        tk.Label(frame, text="Salario mensual:").grid(row=7, column=0, sticky="w", pady=4)
-        ent_salario = tk.Entry(frame, width=35)
-        ent_salario.grid(row=7, column=1, pady=4, sticky="ew")
+        etiqueta("Correo electrónico", 3)
+        ent_correo = entrada(3)
+
+        etiqueta("Teléfono", 4)
+        ent_tel = entrada(4)
+
+        etiqueta("Especialidad", 5)
+        ent_esp = entrada(5)
+
+        etiqueta("Fecha de contratación", 6)
+        ent_fecha = entrada(6)
+        ent_fecha.insert(0, datetime.date.today().strftime("%Y-%m-%d"))
+
+        etiqueta("Salario mensual", 7)
+        ent_salario = entrada(7)
+
+        tk.Label(
+            form,
+            text=(
+                "La cuenta creada tendrá rol Asesor. "
+                "La fecha admite AAAA-MM-DD o DD/MM/AAAA."
+            ),
+            bg=self.colores["fondo_main"],
+            fg="#766b6d",
+            font=("Arial", 9),
+            wraplength=540,
+            justify="left",
+        ).grid(
+            row=8,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(10, 0),
+        )
 
         def validar_fecha(texto):
             texto = texto.strip()
@@ -1278,8 +3031,7 @@ class DashboardSGC:
             return False
 
         def validar_nombre_completo(texto):
-            partes = [p for p in texto.split() if p.strip()]
-            return len(partes) >= 2
+            return len([p for p in texto.split() if p.strip()]) >= 2
 
         def validar_telefono(texto):
             digitos = re.sub(r"\D", "", texto)
@@ -1288,120 +3040,312 @@ class DashboardSGC:
         def validar_email(texto):
             return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", texto) is not None
 
+        def aviso(titulo, mensaje):
+            self._mensaje_corporativo(
+                titulo,
+                mensaje,
+                tipo="advertencia",
+            )
+
         def guardar():
-            usuario = str(ent_user.get()).strip()
-            pw = str(ent_pw.get()).strip()
-            nombre = str(ent_nombre.get()).strip()
-            correo = str(ent_correo.get()).strip()
-            tel = str(ent_tel.get()).strip()
-            esp = str(ent_esp.get()).strip()
-            fecha_contratacion = str(ent_fecha.get()).strip()
-            salario_texto = str(ent_salario.get()).strip()
+            usuario = ent_user.get().strip()
+            pw = ent_pw.get().strip()
+            nombre = ent_nombre.get().strip()
+            correo = ent_correo.get().strip()
+            tel = ent_tel.get().strip()
+            esp = ent_esp.get().strip()
+            fecha_contratacion = ent_fecha.get().strip()
+            salario_texto = ent_salario.get().strip()
+
             salario = 0.0
             if salario_texto:
                 try:
-                    salario = float(salario_texto.replace('$', '').replace(',', '').strip())
+                    salario = float(
+                        salario_texto.replace("$", "").replace(",", "").strip()
+                    )
+                    if salario < 0:
+                        raise ValueError
                 except ValueError:
-                    messagebox.showwarning("Salario inválido", "Ingrese un salario numérico válido")
+                    aviso("Salario inválido", "Ingrese un salario numérico válido.")
                     return
 
             if not usuario or not nombre:
-                messagebox.showwarning("Datos incompletos", "Usuario y Nombre son obligatorios")
+                aviso(
+                    "Datos incompletos",
+                    "Usuario y nombre completo son obligatorios.",
+                )
                 return
+
             if not validar_nombre_completo(nombre):
-                messagebox.showwarning("Nombre inválido", "Ingrese nombre completo y apellido")
+                aviso(
+                    "Nombre inválido",
+                    "Ingrese al menos nombre y apellido.",
+                )
                 return
+
             if not validar_email(correo):
-                messagebox.showwarning("Correo inválido", "Ingrese un correo válido como ejemplo@gmail.com")
+                aviso(
+                    "Correo inválido",
+                    "Ingrese una dirección de correo válida.",
+                )
                 return
+
             if not validar_telefono(tel):
-                messagebox.showwarning("Teléfono inválido", "Ingrese un teléfono con exactamente 11 dígitos")
+                aviso(
+                    "Teléfono inválido",
+                    "Ingrese un número de teléfono con exactamente 11 dígitos.",
+                )
                 return
+
             if not validar_fecha(fecha_contratacion):
-                messagebox.showwarning("Fecha inválida", "Ingrese una fecha válida en formato YYYY-MM-DD o DD/MM/YYYY")
+                aviso(
+                    "Fecha inválida",
+                    "Use el formato AAAA-MM-DD o DD/MM/AAAA.",
+                )
                 return
 
             try:
                 conn = obtener_conexion()
                 cur = conn.cursor()
-                # comprobar usuario
-                cur.execute('SELECT id FROM usuarios WHERE username=?', (usuario,))
+
+                cur.execute(
+                    "SELECT id FROM usuarios WHERE username = ?",
+                    (usuario,),
+                )
                 row = cur.fetchone()
+
                 if row:
                     usuario_id = int(row[0])
                 else:
-                    # crear usuario con rol Asesor
-                    pw_store = hash_password(pw) if pw else hash_password('default123')
-                    cur.execute('INSERT INTO usuarios (username, password_hash, rol) VALUES (?,?,?)', (usuario, pw_store, 'Asesor'))
+                    if not pw:
+                        conn.close()
+                        aviso(
+                            "Contraseña requerida",
+                            "Al crear un usuario nuevo debe indicar una contraseña.",
+                        )
+                        return
+
+                    pw_store = hash_password(pw)
+                    cur.execute(
+                        """
+                        INSERT INTO usuarios (username, password_hash, rol)
+                        VALUES (?, ?, ?)
+                        """,
+                        (usuario, pw_store, "Asesor"),
+                    )
                     usuario_id = int(cur.lastrowid)
 
-                cur.execute('INSERT INTO asesores (usuario_id, nombre, correo, telefono, especialidad, fecha_contratacion, salario) VALUES (?,?,?,?,?,?,?)', (usuario_id, nombre, correo, tel, esp, fecha_contratacion, salario))
+                cur.execute(
+                    """
+                    SELECT id
+                    FROM asesores
+                    WHERE usuario_id = ?
+                    """,
+                    (usuario_id,),
+                )
+                if cur.fetchone():
+                    conn.close()
+                    aviso(
+                        "Usuario ya vinculado",
+                        "Ese usuario ya tiene un perfil de asesor asociado.",
+                    )
+                    return
+
+                cur.execute(
+                    """
+                    INSERT INTO asesores (
+                        usuario_id, nombre, correo, telefono,
+                        especialidad, fecha_contratacion, salario
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        usuario_id,
+                        nombre,
+                        correo,
+                        tel,
+                        esp,
+                        fecha_contratacion,
+                        salario,
+                    ),
+                )
+
                 conn.commit()
                 conn.close()
-                registrar_accion(usuario, 'Crear Asesor', f'Nombre:{nombre}')
+
+                registrar_accion(
+                    getattr(self, "usuario_autenticado", "Sistema"),
+                    "CREÓ ASESOR",
+                    f"Creó el perfil de asesor de {nombre} ({usuario}).",
+                )
+
                 modal.destroy()
                 self.actualizar_tabla_asesores()
-                messagebox.showinfo('OK','Asesor creado')
+
+                self._mensaje_corporativo(
+                    "Asesor creado",
+                    f"{nombre} fue incorporado correctamente.",
+                    tipo="exito",
+                    detalle=(
+                        f"Usuario: {usuario}\n"
+                        f"Especialidad: {esp or 'No especificada'}\n"
+                        f"Fecha de contratación: {fecha_contratacion}"
+                    ),
+                )
+
             except Exception as e:
                 detalle = traceback.format_exc()
                 print(detalle)
-                messagebox.showerror('Error', f'No se pudo crear el asesor:\n{detalle}')
+                self._mensaje_corporativo(
+                    "No se pudo crear el asesor",
+                    "Ocurrió un problema al guardar el perfil.",
+                    tipo="error",
+                    detalle=str(e),
+                )
 
-        btn_guardar = tk.Button(modal, text='Guardar', command=guardar, bg=self.colores['sidebar'], fg='white', font=('Arial', 10, 'bold'), relief='raised', padx=12, pady=5)
-        btn_guardar.pack(pady=10, anchor='center')
+        botones = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        botones.pack(fill="x", pady=(16, 0))
+
+        tk.Button(
+            botones,
+            text="Cancelar",
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=20,
+            pady=8,
+            command=modal.destroy,
+        ).pack(side="right")
+
+        tk.Button(
+            botones,
+            text="Guardar asesor",
+            bg=self.colores["sidebar"],
+            fg="white",
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=20,
+            pady=8,
+            command=guardar,
+        ).pack(side="right", padx=(0, 8))
+
+        ent_user.focus_set()
 
     def modal_editar_asesor(self):
+
+        if not self._requiere_administrador("editar asesores"):
+            return
+
         sel = self.tabla_asesores.selection()
         if not sel:
-            messagebox.showwarning('Seleccionar', 'Seleccione un asesor para editar')
+            self._mensaje_corporativo(
+                "Seleccione un asesor",
+                "Primero seleccione un asesor de la tabla.",
+                tipo="advertencia",
+            )
             return
-        vals = self.tabla_asesores.item(sel, 'values')
+
+        vals = self.tabla_asesores.item(sel, "values")
         asesor_id = vals[0]
 
-        modal = tk.Toplevel(self.root)
-        modal.title('Editar Asesor')
-        modal.geometry('520x480')
-        modal.resizable(True, True)
-        modal.transient(self.root)
-        modal.grab_set()
-        modal.focus_force()
-
-        frame = tk.Frame(modal)
-        frame.pack(padx=15, pady=10, fill='both', expand=True)
-        frame.grid_columnconfigure(1, weight=1)
-
-        tk.Label(frame, text='Nombre completo:').grid(row=0,column=0,sticky='w', pady=4)
-        ent_nombre = tk.Entry(frame,width=35); ent_nombre.grid(row=0,column=1,pady=4, sticky='ew')
-
-        tk.Label(frame, text='Correo:').grid(row=1,column=0,sticky='w')
-        ent_correo = tk.Entry(frame,width=30); ent_correo.grid(row=1,column=1,pady=5)
-
-        tk.Label(frame, text='Teléfono:').grid(row=2,column=0,sticky='w')
-        ent_tel = tk.Entry(frame,width=30); ent_tel.grid(row=2,column=1,pady=5)
-
-        tk.Label(frame, text='Especialidad:').grid(row=3,column=0,sticky='w')
-        ent_esp = tk.Entry(frame,width=30); ent_esp.grid(row=3,column=1,pady=5)
-
-        tk.Label(frame, text='Fecha de contratación:').grid(row=4,column=0,sticky='w')
-        ent_fecha = tk.Entry(frame,width=30); ent_fecha.grid(row=4,column=1,pady=5)
-
-        tk.Label(frame, text='Salario mensual:').grid(row=5,column=0,sticky='w', pady=4)
-        ent_salario = tk.Entry(frame,width=35); ent_salario.grid(row=5,column=1,pady=4, sticky='ew')
-
         try:
-            conn = obtener_conexion(); cur = conn.cursor()
-            cur.execute('SELECT nombre, correo, telefono, especialidad, fecha_contratacion, salario FROM asesores WHERE id=?', (asesor_id,))
+            conn = obtener_conexion()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT nombre, correo, telefono, especialidad,
+                       fecha_contratacion, salario
+                FROM asesores
+                WHERE id = ?
+                """,
+                (asesor_id,),
+            )
             row = cur.fetchone()
             conn.close()
-            if row:
-                ent_nombre.insert(0,row[0] or '')
-                ent_correo.insert(0,row[1] or '')
-                ent_tel.insert(0,row[2] or '')
-                ent_esp.insert(0,row[3] or '')
-                ent_fecha.insert(0,row[4] or '')
-                ent_salario.insert(0, str(row[5]) if row[5] is not None else '')
         except Exception as e:
-            messagebox.showerror('Error', f'No se pudo cargar asesor: {e}'); modal.destroy(); return
+            self._mensaje_corporativo(
+                "No se pudo cargar el asesor",
+                "Ocurrió un problema al consultar sus datos.",
+                tipo="error",
+                detalle=str(e),
+            )
+            return
+
+        if not row:
+            self._mensaje_corporativo(
+                "Asesor no disponible",
+                "El registro seleccionado ya no existe.",
+                tipo="advertencia",
+            )
+            return
+
+        modal, cuerpo = self._crear_modal_corporativo(
+            "Editar asesor",
+            f"Perfil interno #{asesor_id}",
+            ancho=680,
+            alto=610,
+            icono="✎",
+        )
+
+        form = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        form.pack(fill="both", expand=True)
+        form.grid_columnconfigure(1, weight=1)
+
+        def etiqueta(texto, fila):
+            tk.Label(
+                form,
+                text=texto,
+                bg=self.colores["fondo_main"],
+                fg=self.colores["sidebar"],
+                font=("Arial", 9, "bold"),
+            ).grid(row=fila, column=0, sticky="w", padx=(0, 16), pady=8)
+
+        def entrada(fila, valor=""):
+            marco = tk.Frame(
+                form,
+                bg="white",
+                highlightbackground="#d9d1c7",
+                highlightthickness=1,
+            )
+            marco.grid(row=fila, column=1, sticky="ew", pady=7)
+            e = tk.Entry(marco, font=("Arial", 10), relief="flat", bd=0)
+            e.pack(fill="x", padx=10, pady=8)
+            if valor not in (None, ""):
+                e.insert(0, str(valor))
+            return e
+
+        etiqueta("Nombre completo", 0)
+        ent_nombre = entrada(0, row[0] or "")
+
+        etiqueta("Correo electrónico", 1)
+        ent_correo = entrada(1, row[1] or "")
+
+        etiqueta("Teléfono", 2)
+        ent_tel = entrada(2, row[2] or "")
+
+        etiqueta("Especialidad", 3)
+        ent_esp = entrada(3, row[3] or "")
+
+        etiqueta("Fecha de contratación", 4)
+        ent_fecha = entrada(4, row[4] or "")
+
+        etiqueta("Salario mensual", 5)
+        ent_salario = entrada(5, row[5] if row[5] is not None else "")
+
+        tk.Label(
+            form,
+            text="La cuenta de acceso vinculada no se modifica desde esta ventana.",
+            bg=self.colores["fondo_main"],
+            fg="#766b6d",
+            font=("Arial", 9),
+        ).grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(10, 0),
+        )
 
         def validar_fecha(texto):
             texto = texto.strip()
@@ -1416,71 +3360,208 @@ class DashboardSGC:
             return False
 
         def validar_nombre_completo(texto):
-            partes = [p for p in texto.split() if p.strip()]
-            return len(partes) >= 2
+            return len([p for p in texto.split() if p.strip()]) >= 2
 
         def validar_telefono(texto):
-            digitos = re.sub(r"\D", "", texto)
-            return len(digitos) == 11
+            return len(re.sub(r"\D", "", texto)) == 11
 
         def validar_email(texto):
             return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", texto) is not None
 
+        def aviso(titulo, mensaje):
+            self._mensaje_corporativo(
+                titulo,
+                mensaje,
+                tipo="advertencia",
+            )
+
         def guardar_edicion():
-            nombre = str(ent_nombre.get()).strip(); correo = str(ent_correo.get()).strip(); tel = str(ent_tel.get()).strip(); esp = str(ent_esp.get()).strip(); fecha_contratacion = str(ent_fecha.get()).strip(); salario_texto = str(ent_salario.get()).strip()
-            salario = 0.0
-            if salario_texto:
-                try:
-                    salario = float(salario_texto.replace('$','').replace(',','').strip())
-                except ValueError:
-                    messagebox.showwarning('Salario inválido', 'Ingrese un salario numérico válido')
-                    return
-            if not nombre:
-                messagebox.showwarning('Datos incompletos', 'Nombre es obligatorio')
-                return
-            if not validar_nombre_completo(nombre):
-                messagebox.showwarning('Nombre inválido', 'Ingrese nombre completo y apellido')
-                return
-            if not validar_email(correo):
-                messagebox.showwarning('Correo inválido', 'Ingrese un correo válido como ejemplo@gmail.com')
-                return
-            if not validar_telefono(tel):
-                messagebox.showwarning('Teléfono inválido', 'Ingrese un teléfono con exactamente 11 dígitos')
-                return
-            if not validar_fecha(fecha_contratacion):
-                messagebox.showwarning('Fecha inválida', 'Ingrese una fecha válida en formato YYYY-MM-DD o DD/MM/YYYY')
-                return
+            nombre = ent_nombre.get().strip()
+            correo = ent_correo.get().strip()
+            tel = ent_tel.get().strip()
+            esp = ent_esp.get().strip()
+            fecha_contratacion = ent_fecha.get().strip()
+            salario_texto = ent_salario.get().strip()
+
             try:
-                conn = obtener_conexion(); cur = conn.cursor()
-                cur.execute('UPDATE asesores SET nombre=?, correo=?, telefono=?, especialidad=?, fecha_contratacion=?, salario=? WHERE id=?', (nombre, correo, tel, esp, fecha_contratacion, salario, asesor_id))
-                conn.commit(); conn.close()
-                registrar_accion('system','Editar Asesor', f'id:{asesor_id}')
-                modal.destroy(); self.actualizar_tabla_asesores(); messagebox.showinfo('OK','Asesor actualizado')
+                salario = (
+                    float(salario_texto.replace("$", "").replace(",", "").strip())
+                    if salario_texto
+                    else 0.0
+                )
+                if salario < 0:
+                    raise ValueError
+            except ValueError:
+                aviso("Salario inválido", "Ingrese un salario numérico válido.")
+                return
+
+            if not nombre:
+                aviso("Datos incompletos", "El nombre es obligatorio.")
+                return
+
+            if not validar_nombre_completo(nombre):
+                aviso("Nombre inválido", "Ingrese al menos nombre y apellido.")
+                return
+
+            if not validar_email(correo):
+                aviso("Correo inválido", "Ingrese una dirección de correo válida.")
+                return
+
+            if not validar_telefono(tel):
+                aviso(
+                    "Teléfono inválido",
+                    "Ingrese un número de teléfono con exactamente 11 dígitos.",
+                )
+                return
+
+            if not validar_fecha(fecha_contratacion):
+                aviso(
+                    "Fecha inválida",
+                    "Use el formato AAAA-MM-DD o DD/MM/AAAA.",
+                )
+                return
+
+            try:
+                conn = obtener_conexion()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    UPDATE asesores
+                    SET nombre = ?, correo = ?, telefono = ?,
+                        especialidad = ?, fecha_contratacion = ?, salario = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        nombre,
+                        correo,
+                        tel,
+                        esp,
+                        fecha_contratacion,
+                        salario,
+                        asesor_id,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                registrar_accion(
+                    getattr(self, "usuario_autenticado", "Sistema"),
+                    "EDITÓ ASESOR",
+                    f"Actualizó el perfil #{asesor_id} de {nombre}.",
+                )
+
+                modal.destroy()
+                self.actualizar_tabla_asesores()
+
+                self._mensaje_corporativo(
+                    "Asesor actualizado",
+                    f"Los datos de {nombre} fueron guardados correctamente.",
+                    tipo="exito",
+                )
+
             except Exception as e:
                 detalle = traceback.format_exc()
                 print(detalle)
-                messagebox.showerror('Error', f'No se pudo actualizar el asesor:\n{detalle}')
+                self._mensaje_corporativo(
+                    "No se pudo actualizar",
+                    "Ocurrió un problema al guardar los cambios.",
+                    tipo="error",
+                    detalle=str(e),
+                )
 
-        btn_guardar = tk.Button(modal, text='Guardar', command=guardar_edicion, bg=self.colores['botones_menu'], fg=self.colores['oro'], font=('Arial', 10, 'bold'), relief='raised', padx=12, pady=5)
-        btn_guardar.pack(pady=10)
+        botones = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        botones.pack(fill="x", pady=(16, 0))
+
+        tk.Button(
+            botones,
+            text="Cancelar",
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=20,
+            pady=8,
+            command=modal.destroy,
+        ).pack(side="right")
+
+        tk.Button(
+            botones,
+            text="Guardar cambios",
+            bg=self.colores["sidebar"],
+            fg="white",
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=20,
+            pady=8,
+            command=guardar_edicion,
+        ).pack(side="right", padx=(0, 8))
+
+        ent_nombre.focus_set()
 
     def eliminar_asesor_bd(self):
+
+        if not self._requiere_administrador("eliminar asesores"):
+            return
+
         sel = self.tabla_asesores.selection()
         if not sel:
-            messagebox.showwarning('Seleccionar','Seleccione un asesor a eliminar')
+            self._mensaje_corporativo(
+                "Seleccione un asesor",
+                "Primero seleccione el asesor que desea eliminar.",
+                tipo="advertencia",
+            )
             return
-        vals = self.tabla_asesores.item(sel, 'values')
+
+        vals = self.tabla_asesores.item(sel, "values")
         asesor_id = vals[0]
-        if not messagebox.askyesno('Confirmar','Eliminar asesor seleccionado?'):
+        usuario = vals[1] if len(vals) > 1 else "—"
+        nombre = vals[2] if len(vals) > 2 else f"Asesor #{asesor_id}"
+
+        if not self._confirmar_corporativo(
+            "Eliminar asesor",
+            f"¿Desea eliminar el perfil de {nombre}?",
+            detalle=(
+                f"ID interno: {asesor_id}\n"
+                f"Usuario vinculado: {usuario}\n\n"
+                "Se eliminará el perfil de asesor. La cuenta de usuario "
+                "vinculada se conservará."
+            ),
+            texto_confirmar="Eliminar asesor",
+            peligro=True,
+        ):
             return
+
         try:
-            conn = obtener_conexion(); cur = conn.cursor()
-            cur.execute('DELETE FROM asesores WHERE id=?', (asesor_id,))
-            conn.commit(); conn.close()
-            registrar_accion('system','Eliminar Asesor', f'id:{asesor_id}')
-            self.actualizar_tabla_asesores(); messagebox.showinfo('OK','Asesor eliminado')
+            conn = obtener_conexion()
+            cur = conn.cursor()
+            cur.execute(
+                "DELETE FROM asesores WHERE id = ?",
+                (asesor_id,),
+            )
+            conn.commit()
+            conn.close()
+
+            registrar_accion(
+                getattr(self, "usuario_autenticado", "Sistema"),
+                "ELIMINÓ ASESOR",
+                f"Eliminó el perfil #{asesor_id} de {nombre}.",
+            )
+
+            self.actualizar_tabla_asesores()
+
+            self._mensaje_corporativo(
+                "Asesor eliminado",
+                f"El perfil de {nombre} fue eliminado correctamente.",
+                tipo="exito",
+            )
+
         except Exception as e:
-            messagebox.showerror('Error', f'No se pudo eliminar: {e}')
+            self._mensaje_corporativo(
+                "No se pudo eliminar",
+                "Ocurrió un problema al eliminar el asesor.",
+                tipo="error",
+                detalle=str(e),
+            )
 
     def alternar_estado_servicio(self, event):
         """Alterna el estado nativo del cliente entre Activo e Inactivo con doble clic."""
@@ -1509,119 +3590,247 @@ class DashboardSGC:
             
             self.actualizar_tabla_clientes()
         except Exception as e:
-            messagebox.showerror("Error", f"No se pudo modificar el estado del cliente: {e}")
+            self._mensaje_corporativo(
+                "No se pudo cambiar el estado",
+                "Ocurrió un problema al actualizar el estado del cliente.",
+                tipo="error",
+                detalle=str(e)
+            )
 
     def modal_agregar_cliente(self):
-        """Abre una ventana emergente para registrar manualmente un nuevo cliente con ID e Industria dinámicos."""
-        modal = tk.Toplevel(self.root)
-        modal.title("Agregar Nuevo Cliente")
-        modal.geometry("440x510")
-        modal.configure(bg=self.colores["fondo_main"])
-        modal.transient(self.root)
-        modal.grab_set()
+        """Registro manual de clientes con diseño corporativo."""
+        modal, cuerpo = self._crear_modal_corporativo(
+            "Nuevo cliente",
+            "Registro manual en el directorio corporativo",
+            ancho=650,
+            alto=610,
+            icono="＋",
+        )
 
-        tk.Label(modal, text="Registro Manual de Cliente", font=("Arial", 12, "bold"), 
-            bg=self.colores["fondo_main"], fg=self.colores["sidebar"]).pack(pady=15)
+        form = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        form.pack(fill="both", expand=True)
+        form.grid_columnconfigure(1, weight=1)
 
-        frame_campos = tk.Frame(modal, bg=self.colores["fondo_main"])
-        frame_campos.pack(fill="both", expand=True, padx=20)
+        def etiqueta(texto, fila):
+            tk.Label(
+                form,
+                text=texto,
+                bg=self.colores["fondo_main"],
+                fg=self.colores["sidebar"],
+                font=("Arial", 9, "bold"),
+            ).grid(row=fila, column=0, sticky="w", padx=(0, 14), pady=8)
 
-        # 1. Nombre Cliente
-        tk.Label(frame_campos, text="Nombre Cliente / Empresa:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=0, column=0, sticky="w", pady=5)
-        entry_nom = tk.Entry(frame_campos, width=25, relief="solid")
-        entry_nom.grid(row=0, column=1, pady=5)
+        def entrada(fila):
+            marco = tk.Frame(
+                form,
+                bg="white",
+                highlightbackground="#d9d1c7",
+                highlightthickness=1,
+            )
+            marco.grid(row=fila, column=1, sticky="ew", pady=7)
+            e = tk.Entry(marco, font=("Arial", 10), relief="flat", bd=0)
+            e.pack(fill="x", padx=10, pady=8)
+            return e
 
-        # 2. Industria (Prefijos de Código dinámicos: 1-001, 2-001, 3-001)
-        tk.Label(frame_campos, text="Tipo de Industria:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=1, column=0, sticky="w", pady=5)
-        combo_ind = ttk.Combobox(frame_campos, width=22, state="readonly", 
-                                values=TIPOS_EMPRESA)
-        combo_ind.grid(row=1, column=1, pady=5)
-        combo_ind.current(0)  # Por defecto manufacturera
+        # Catálogo real de servicios.
+        servicios_disponibles = []
+        try:
+            conn = obtener_conexion()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT nombre_servicio
+                FROM servicios
+                WHERE nombre_servicio IS NOT NULL
+                  AND TRIM(nombre_servicio) != ''
+                ORDER BY nombre_servicio COLLATE NOCASE
+                """
+            )
+            servicios_disponibles = [fila[0] for fila in cur.fetchall()]
+            conn.close()
+        except Exception:
+            servicios_disponibles = []
 
-        # 3. Servicio del Cliente (Cargados del listado oficial del Landing Page)
-        tk.Label(frame_campos, text="Servicio Solicitado:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=2, column=0, sticky="w", pady=5)
-        
-        servicios_disponibles = [
-            "Planificación Estratégica Empresarial",
-            "Gestión Financiera, Costos y Tesorería",
-            "Optimización de Procesos Administrativos y Operacionales",
-            "Transformación Digital (Sistema Homologado)",
-            "Outsourcing Contable y Gestión de Nómina",
-            "Cumplimiento Fiscal, Tributario y Parafiscal",
-            "Consultoría Legal Corporativa"
-        ]
+        etiqueta("Cliente / empresa", 0)
+        entry_nom = entrada(0)
 
-        combo_serv = ttk.Combobox(frame_campos, width=22, state="readonly", values=servicios_disponibles)
-        combo_serv.grid(row=2, column=1, pady=5)
-        combo_serv.current(0)
+        etiqueta("Sector / industria", 1)
+        combo_ind = ttk.Combobox(
+            form,
+            state="readonly",
+            values=TIPOS_EMPRESA,
+            font=("Arial", 10),
+        )
+        combo_ind.grid(row=1, column=1, sticky="ew", pady=7, ipady=4)
+        if TIPOS_EMPRESA:
+            combo_ind.current(0)
 
-        # 4. Teléfono
-        tk.Label(frame_campos, text="Teléfono de Contacto:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=3, column=0, sticky="w", pady=5)
-        entry_tel = tk.Entry(frame_campos, width=25, relief="solid")
-        entry_tel.grid(row=3, column=1, pady=5)
+        etiqueta("Servicio solicitado", 2)
+        combo_serv = ttk.Combobox(
+            form,
+            state="readonly",
+            values=servicios_disponibles,
+            font=("Arial", 10),
+        )
+        combo_serv.grid(row=2, column=1, sticky="ew", pady=7, ipady=4)
+        if servicios_disponibles:
+            combo_serv.current(0)
 
-        # 5. Nombre Persona Contacto
-        tk.Label(frame_campos, text="Nombre Persona Contacto:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=4, column=0, sticky="w", pady=5)
-        entry_per_con = tk.Entry(frame_campos, width=25, relief="solid")
-        entry_per_con.grid(row=4, column=1, pady=5)
+        etiqueta("Teléfono", 3)
+        entry_tel = entrada(3)
 
-        # 6. Correo Electrónico
-        tk.Label(frame_campos, text="Correo:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=5, column=0, sticky="w", pady=5)
-        entry_cor = tk.Entry(frame_campos, width=25, relief="solid")
-        entry_cor.grid(row=5, column=1, pady=5)
+        etiqueta("Persona de contacto", 4)
+        entry_per_con = entrada(4)
+
+        etiqueta("Correo electrónico", 5)
+        entry_cor = entrada(5)
+
+        tk.Label(
+            form,
+            text="El código del cliente se generará automáticamente según su sector.",
+            bg=self.colores["fondo_main"],
+            fg="#766b6d",
+            font=("Arial", 9),
+            justify="left",
+        ).grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(10, 4),
+        )
+
+        botones = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        botones.pack(fill="x", pady=(16, 0))
 
         def guardar_nuevo():
             nom = entry_nom.get().strip()
             cor = entry_cor.get().strip() or "No registrado"
             tel = entry_tel.get().strip() or "No registrado"
             per_con = entry_per_con.get().strip() or nom
-            industria_sel = combo_ind.get()
-            servicio_sel = combo_serv.get()
+            industria_sel = combo_ind.get().strip()
+            servicio_sel = combo_serv.get().strip()
 
             if not nom:
-                messagebox.showerror("Error", "El nombre de la empresa es obligatorio.", parent=modal)
+                self._mensaje_corporativo(
+                    "Falta información",
+                    "El nombre del cliente o empresa es obligatorio.",
+                    tipo="advertencia",
+                )
+                return
+
+            if not industria_sel:
+                self._mensaje_corporativo(
+                    "Falta información",
+                    "Seleccione el sector o industria del cliente.",
+                    tipo="advertencia",
+                )
+                return
+
+            if not servicio_sel:
+                self._mensaje_corporativo(
+                    "Falta información",
+                    "Seleccione el servicio solicitado.",
+                    tipo="advertencia",
+                )
                 return
 
             try:
                 conn = obtener_conexion()
                 cursor = conn.cursor()
-                
-                # Generar código de cliente según industria (centralizado)
+
                 codigo = generar_id_cliente(industria_sel, conn)
 
-                # Comprobación preventiva de campos en BD
                 cursor.execute("PRAGMA table_info(clientes)")
                 columnas = [col[1] for col in cursor.fetchall()]
                 if "nombre_contacto" not in columnas:
-                    cursor.execute("ALTER TABLE clientes ADD COLUMN nombre_contacto TEXT")
+                    cursor.execute(
+                        "ALTER TABLE clientes ADD COLUMN nombre_contacto TEXT"
+                    )
                     conn.commit()
 
-                # Insertar en tabla local
-                cursor.execute("""
-                    INSERT INTO clientes (codigo, nombre, correo, telefono, industria, servicio, nombre_contacto, fecha_registro, estado)
+                cursor.execute(
+                    """
+                    INSERT INTO clientes (
+                        codigo, nombre, correo, telefono, industria,
+                        servicio, nombre_contacto, fecha_registro, estado
+                    )
                     VALUES (?, ?, ?, ?, ?, ?, ?, date('now'), 'Activo')
-                """, (codigo, nom, cor, tel, industria_sel, servicio_sel, per_con))
-                
-                conn.commit()
-                
-                usuario_actual = getattr(self, 'usuario_autenticado', 'Sistema')
-                registrar_accion(usuario_actual, "AGREGÓ CLIENTE", f"Registró a: {nom} [{industria_sel}] bajo el código {codigo}")
+                    """,
+                    (
+                        codigo,
+                        nom,
+                        cor,
+                        tel,
+                        industria_sel,
+                        servicio_sel,
+                        per_con,
+                    ),
+                )
 
+                conn.commit()
                 conn.close()
-                messagebox.showinfo("Éxito", f"Cliente guardado correctamente.\nCódigo Asignado: {codigo}", parent=modal)
+
+                registrar_accion(
+                    getattr(self, "usuario_autenticado", "Sistema"),
+                    "AGREGÓ CLIENTE",
+                    f"Registró a: {nom} [{industria_sel}] bajo el código {codigo}",
+                )
+
                 modal.destroy()
                 self.actualizar_tabla_clientes()
-            except Exception as e:
-                messagebox.showerror("Error", f"No se pudo guardar en la base de datos: {e}", parent=modal)
 
-        tk.Button(modal, text="Guardar Cliente", bg=self.colores["verde_aprobar"], fg="white", 
-                font=("Arial", 10, "bold"), relief="flat", command=guardar_nuevo).pack(pady=15)
+                self._mensaje_corporativo(
+                    "Cliente registrado",
+                    f"{nom} fue agregado correctamente al directorio.",
+                    tipo="exito",
+                    detalle=f"Código asignado: {codigo}\nServicio: {servicio_sel}",
+                )
+
+            except Exception as e:
+                self._mensaje_corporativo(
+                    "No se pudo registrar el cliente",
+                    "Ocurrió un problema al guardar la información.",
+                    tipo="error",
+                    detalle=str(e),
+                )
+
+        tk.Button(
+            botones,
+            text="Cancelar",
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=20,
+            pady=8,
+            command=modal.destroy,
+        ).pack(side="right")
+
+        tk.Button(
+            botones,
+            text="Guardar cliente",
+            bg=self.colores["sidebar"],
+            fg="white",
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=20,
+            pady=8,
+            command=guardar_nuevo,
+        ).pack(side="right", padx=(0, 8))
+
+        entry_nom.focus_set()
 
     def modal_editar_cliente(self):
-        """Abre una ventana emergente moderna para editar los datos del cliente seleccionado."""
+        """Edición profesional de datos del cliente seleccionado."""
         seleccion = self.tabla_clientes.selection()
+
         if not seleccion:
-            messagebox.showwarning("Atención", "Por favor, seleccione un cliente de la lista para editar.")
+            self._mensaje_corporativo(
+                "Seleccione un cliente",
+                "Primero seleccione un cliente de la tabla para editarlo.",
+                tipo="advertencia",
+            )
             return
 
         valores = self.tabla_clientes.item(seleccion, "values")
@@ -1633,165 +3842,307 @@ class DashboardSGC:
         per_con_act = valores[5]
         correo_act = valores[6]
 
-        # Consultar datos actuales específicos de la base de datos
-        industria_act = "Servicios"
+        industria_act = ""
         try:
             conn = obtener_conexion()
             cursor = conn.cursor()
-            cursor.execute("SELECT industria FROM clientes WHERE id = ?", (id_cliente,))
+            cursor.execute(
+                "SELECT industria FROM clientes WHERE id = ?",
+                (id_cliente,),
+            )
             fila = cursor.fetchone()
             if fila:
-                industria_act = fila[0]
+                industria_act = fila[0] or ""
             conn.close()
         except Exception as e:
             print(f"Error obteniendo detalles del cliente: {e}")
 
-        modal = tk.Toplevel(self.root)
-        modal.title("Editar Cliente")
-        modal.geometry("440x510")
-        modal.configure(bg=self.colores["fondo_main"])
-        modal.transient(self.root)
-        modal.grab_set()
+        servicios_disponibles = []
+        try:
+            conn = obtener_conexion()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT nombre_servicio
+                FROM servicios
+                WHERE nombre_servicio IS NOT NULL
+                  AND TRIM(nombre_servicio) != ''
+                ORDER BY nombre_servicio COLLATE NOCASE
+                """
+            )
+            servicios_disponibles = [fila[0] for fila in cur.fetchall()]
+            conn.close()
+        except Exception:
+            servicios_disponibles = []
 
-        tk.Label(modal, text=f"Modificar Datos del Cliente ID: {id_cliente}\nCódigo actual: {codigo_act}", 
-                 font=("Arial", 11, "bold"), bg=self.colores["fondo_main"], fg=self.colores["sidebar"]).pack(pady=15)
+        modal, cuerpo = self._crear_modal_corporativo(
+            "Editar cliente",
+            f"Código actual: {codigo_act}",
+            ancho=650,
+            alto=620,
+            icono="✎",
+        )
 
-        frame_campos = tk.Frame(modal, bg=self.colores["fondo_main"])
-        frame_campos.pack(fill="both", expand=True, padx=20)
+        form = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        form.pack(fill="both", expand=True)
+        form.grid_columnconfigure(1, weight=1)
 
-        # 1. Nombre Cliente
-        tk.Label(frame_campos, text="Nombre Cliente / Empresa:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=0, column=0, sticky="w", pady=5)
-        entry_nom = tk.Entry(frame_campos, width=25, relief="solid")
-        entry_nom.insert(0, nombre_act)
-        entry_nom.grid(row=0, column=1, pady=5)
+        def etiqueta(texto, fila):
+            tk.Label(
+                form,
+                text=texto,
+                bg=self.colores["fondo_main"],
+                fg=self.colores["sidebar"],
+                font=("Arial", 9, "bold"),
+            ).grid(row=fila, column=0, sticky="w", padx=(0, 14), pady=8)
 
-        # 2. Tipo de Industria
-        tk.Label(frame_campos, text="Tipo de Industria:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=1, column=0, sticky="w", pady=5)
-        combo_ind = ttk.Combobox(frame_campos, width=22, state="readonly", 
-                            values=TIPOS_EMPRESA)
-        combo_ind.grid(row=1, column=1, pady=5)
-        
-        if industria_act in combo_ind["values"]:
+        def entrada(fila, valor=""):
+            marco = tk.Frame(
+                form,
+                bg="white",
+                highlightbackground="#d9d1c7",
+                highlightthickness=1,
+            )
+            marco.grid(row=fila, column=1, sticky="ew", pady=7)
+            e = tk.Entry(marco, font=("Arial", 10), relief="flat", bd=0)
+            e.pack(fill="x", padx=10, pady=8)
+            if valor not in (None, ""):
+                e.insert(0, valor)
+            return e
+
+        etiqueta("Cliente / empresa", 0)
+        entry_nom = entrada(0, nombre_act)
+
+        etiqueta("Sector / industria", 1)
+        combo_ind = ttk.Combobox(
+            form,
+            state="readonly",
+            values=TIPOS_EMPRESA,
+            font=("Arial", 10),
+        )
+        combo_ind.grid(row=1, column=1, sticky="ew", pady=7, ipady=4)
+
+        if industria_act in TIPOS_EMPRESA:
             combo_ind.set(industria_act)
-        else:
-            combo_ind.current(2)
+        elif TIPOS_EMPRESA:
+            combo_ind.current(0)
 
-        # 3. Servicio del Cliente
-        tk.Label(frame_campos, text="Servicio Solicitado:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=2, column=0, sticky="w", pady=5)
-        
-        servicios_disponibles = [
-            "Planificación Estratégica Empresarial",
-            "Gestión Financiera, Costos y Tesorería",
-            "Optimización de Procesos Administrativos y Operacionales",
-            "Transformación Digital (Sistema Homologado)",
-            "Outsourcing Contable y Gestión de Nómina",
-            "Cumplimiento Fiscal, Tributario y Parafiscal",
-            "Consultoría Legal Corporativa"
-        ]
+        etiqueta("Servicio solicitado", 2)
+        combo_serv = ttk.Combobox(
+            form,
+            state="readonly",
+            values=servicios_disponibles,
+            font=("Arial", 10),
+        )
+        combo_serv.grid(row=2, column=1, sticky="ew", pady=7, ipady=4)
 
-        combo_serv = ttk.Combobox(frame_campos, width=22, state="readonly", values=servicios_disponibles)
-        combo_serv.grid(row=2, column=1, pady=5)
-        
-        if servicio_act in combo_serv["values"]:
+        if servicio_act in servicios_disponibles:
             combo_serv.set(servicio_act)
-        else:
+        elif servicios_disponibles:
             combo_serv.current(0)
 
-        # 4. Teléfono
-        tk.Label(frame_campos, text="Teléfono de Contacto:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=3, column=0, sticky="w", pady=5)
-        entry_tel = tk.Entry(frame_campos, width=25, relief="solid")
-        entry_tel.insert(0, telefono_act)
-        entry_tel.grid(row=3, column=1, pady=5)
+        etiqueta("Teléfono", 3)
+        entry_tel = entrada(3, telefono_act)
 
-        # 5. Nombre Persona Contacto
-        tk.Label(frame_campos, text="Nombre Persona Contacto:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=4, column=0, sticky="w", pady=5)
-        entry_per_con = tk.Entry(frame_campos, width=25, relief="solid")
-        entry_per_con.insert(0, per_con_act)
-        entry_per_con.grid(row=4, column=1, pady=5)
+        etiqueta("Persona de contacto", 4)
+        entry_per_con = entrada(4, per_con_act)
 
-        # 6. Correo Electrónico
-        tk.Label(frame_campos, text="Correo:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=5, column=0, sticky="w", pady=5)
-        entry_cor = tk.Entry(frame_campos, width=25, relief="solid")
-        entry_cor.insert(0, correo_act)
-        entry_cor.grid(row=5, column=1, pady=5)
+        etiqueta("Correo electrónico", 5)
+        entry_cor = entrada(5, correo_act)
+
+        tk.Label(
+            form,
+            text=(
+                "Si cambia el sector, el sistema generará un nuevo código "
+                "acorde a la clasificación seleccionada."
+            ),
+            bg=self.colores["fondo_main"],
+            fg="#766b6d",
+            font=("Arial", 9),
+            justify="left",
+            wraplength=520,
+        ).grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(10, 4),
+        )
+
+        botones = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        botones.pack(fill="x", pady=(16, 0))
 
         def actualizar_datos():
             nom = entry_nom.get().strip()
-            cor = entry_cor.get().strip()
-            tel = entry_tel.get().strip()
+            cor = entry_cor.get().strip() or "No registrado"
+            tel = entry_tel.get().strip() or "No registrado"
             per_con = entry_per_con.get().strip() or nom
-            nueva_industria = combo_ind.get()
-            nuevo_servicio = combo_serv.get()
+            nueva_industria = combo_ind.get().strip()
+            nuevo_servicio = combo_serv.get().strip()
 
             if not nom:
-                messagebox.showerror("Error", "El nombre es obligatorio.", parent=modal)
+                self._mensaje_corporativo(
+                    "Falta información",
+                    "El nombre del cliente es obligatorio.",
+                    tipo="advertencia",
+                )
                 return
 
             try:
                 conn = obtener_conexion()
                 cursor = conn.cursor()
-                
-                # RECALCULAR ID AUTOMÁTICAMENTE SI CAMBIA LA INDUSTRIA
+
                 if nueva_industria != industria_act:
                     nuevo_codigo = generar_id_cliente(nueva_industria, conn)
                 else:
                     nuevo_codigo = codigo_act
 
-                cursor.execute("""
-                    UPDATE clientes 
-                    SET nombre = ?, correo = ?, telefono = ?, industria = ?, servicio = ?, nombre_contacto = ?, codigo = ?
+                cursor.execute(
+                    """
+                    UPDATE clientes
+                    SET nombre = ?, correo = ?, telefono = ?, industria = ?,
+                        servicio = ?, nombre_contacto = ?, codigo = ?
                     WHERE id = ?
-                """, (nom, cor, tel, nueva_industria, nuevo_servicio, per_con, nuevo_codigo, id_cliente))
-                
+                    """,
+                    (
+                        nom,
+                        cor,
+                        tel,
+                        nueva_industria,
+                        nuevo_servicio,
+                        per_con,
+                        nuevo_codigo,
+                        id_cliente,
+                    ),
+                )
+
                 conn.commit()
-                
-                usuario_actual = getattr(self, 'usuario_autenticado', 'Sistema')
-                registrar_accion(usuario_actual, "EDITÓ CLIENTE", f"Modificó datos de {nom} (Nuevo Código: {nuevo_codigo})")
-                
                 conn.close()
-                messagebox.showinfo("Éxito", f"Cliente actualizado con éxito.\nCódigo final: {nuevo_codigo}", parent=modal)
+
+                registrar_accion(
+                    getattr(self, "usuario_autenticado", "Sistema"),
+                    "EDITÓ CLIENTE",
+                    f"Modificó datos de {nom} (Código: {nuevo_codigo})",
+                )
+
                 modal.destroy()
                 self.actualizar_tabla_clientes()
-            except Exception as e:
-                messagebox.showerror("Error", f"No se pudo actualizar: {e}", parent=modal)
 
-        tk.Button(modal, text="Guardar Cambios", bg=self.colores["sidebar"], fg="white", 
-                font=("Arial", 10, "bold"), relief="flat", command=actualizar_datos).pack(pady=15)
+                self._mensaje_corporativo(
+                    "Cliente actualizado",
+                    f"Los datos de {nom} fueron guardados correctamente.",
+                    tipo="exito",
+                    detalle=f"Código final: {nuevo_codigo}\nServicio: {nuevo_servicio}",
+                )
+
+            except Exception as e:
+                self._mensaje_corporativo(
+                    "No se pudo actualizar",
+                    "Ocurrió un problema al guardar los cambios.",
+                    tipo="error",
+                    detalle=str(e),
+                )
+
+        tk.Button(
+            botones,
+            text="Cancelar",
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=20,
+            pady=8,
+            command=modal.destroy,
+        ).pack(side="right")
+
+        tk.Button(
+            botones,
+            text="Guardar cambios",
+            bg=self.colores["sidebar"],
+            fg="white",
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=20,
+            pady=8,
+            command=actualizar_datos,
+        ).pack(side="right", padx=(0, 8))
+
+        entry_nom.focus_set()
 
     def eliminar_cliente_bd(self):
-        """Elimina de forma segura un cliente y sus registros financieros."""
+
+        if not self._requiere_administrador("eliminar clientes"):
+            return
+
         seleccion = self.tabla_clientes.selection()
         if not seleccion:
-            messagebox.showwarning("Atención", "Por favor, seleccione un cliente del directorio para eliminar.")
+            self._mensaje_corporativo(
+                "Seleccione un cliente",
+                "Primero seleccione un cliente del directorio.",
+                tipo="advertencia",
+            )
             return
 
         valores = self.tabla_clientes.item(seleccion, "values")
         id_cliente = valores[0]
-        nombre_cliente = valores[2] # Ajustado al índice 2 para el Nombre en el nuevo esquema
+        codigo_cliente = valores[1] if len(valores) > 1 else "—"
+        nombre_cliente = valores[2]
 
-        confirmacion = messagebox.askyesno("Confirmación de Seguridad", 
-                                            f"¿Está completamente seguro de que desea eliminar al cliente '{nombre_cliente}'?\n\nEsta acción borrará también sus registros financieros asociados de forma permanente.")
-        if not confirmacion:
+        if not self._confirmar_corporativo(
+            "Eliminar cliente",
+            f"¿Desea eliminar permanentemente a {nombre_cliente}?",
+            detalle=(
+                f"Código: {codigo_cliente}\n\n"
+                "Esta acción eliminará también las operaciones financieras "
+                "asociadas a este cliente y no puede deshacerse."
+            ),
+            texto_confirmar="Eliminar permanentemente",
+            peligro=True,
+        ):
             return
 
         try:
             conn = obtener_conexion()
             cursor = conn.cursor()
-            
-            cursor.execute("DELETE FROM solicitudes_servicio WHERE cliente_id = ?", (id_cliente,))
-            cursor.execute("DELETE FROM clientes WHERE id = ?", (id_cliente,))
-            
+
+            cursor.execute(
+                "DELETE FROM solicitudes_servicio WHERE cliente_id = ?",
+                (id_cliente,),
+            )
+            cursor.execute(
+                "DELETE FROM clientes WHERE id = ?",
+                (id_cliente,),
+            )
+
             conn.commit()
-            
-            usuario_actual = getattr(self, 'usuario_autenticado', 'Sistema')
-            registrar_accion(usuario_actual, "ELIMINÓ CLIENTE", f"Removió de forma permanente a: {nombre_cliente} (ID: {id_cliente})")
-            
             conn.close()
-            messagebox.showinfo("Éxito", "El cliente y su historial financiero han sido removidos del sistema.")
+
+            registrar_accion(
+                getattr(self, "usuario_autenticado", "Sistema"),
+                "ELIMINÓ CLIENTE",
+                (
+                    f"Removió de forma permanente a {nombre_cliente} "
+                    f"(ID: {id_cliente}, código: {codigo_cliente})."
+                ),
+            )
+
             self.actualizar_tabla_clientes()
+
+            self._mensaje_corporativo(
+                "Cliente eliminado",
+                f"{nombre_cliente} fue removido del sistema.",
+                tipo="exito",
+                detalle="También se eliminaron sus movimientos financieros asociados.",
+            )
+
         except Exception as e:
-            messagebox.showerror("Error", f"No se pudo completar la transacción de borrado: {e}")
-            
+            self._mensaje_corporativo(
+                "No se pudo eliminar",
+                "Ocurrió un problema durante la eliminación del cliente.",
+                tipo="error",
+                detalle=str(e),
+            )
+
     def mostrar_servicios(self):
         panel = self.crear_panel_principal("Catálogo de Servicios y Precios Base")
 
@@ -1811,14 +4162,17 @@ class DashboardSGC:
         def servicio_seleccionado():
             seleccion = tabla_s.selection()
             if not seleccion:
-                messagebox.showwarning(
+                self._mensaje_corporativo(
                     "Seleccione un servicio",
-                    "Primero seleccione un servicio de la tabla."
+                    "Primero seleccione un servicio de la tabla.",
+                    tipo="advertencia"
                 )
                 return None
             return tabla_s.item(seleccion[0], "values")
 
         def editar_servicio():
+            if not self._requiere_administrador("editar servicios del catálogo"):
+                return
             valores = servicio_seleccionado()
             if not valores:
                 return
@@ -1835,31 +4189,30 @@ class DashboardSGC:
                 fila = cur.fetchone()
                 conn.close()
             except Exception as e:
-                messagebox.showerror("Error", f"No se pudo cargar el servicio: {e}")
+                self._mensaje_corporativo(
+                    "Servicio no disponible",
+                    "No se pudo cargar la información del servicio.",
+                    tipo="error",
+                    detalle=str(e)
+                )
                 return
 
             if not fila:
-                messagebox.showerror("Error", "El servicio seleccionado ya no existe.")
+                self._mensaje_corporativo(
+                    "Servicio no disponible",
+                    "El servicio seleccionado ya no existe.",
+                    tipo="advertencia"
+                )
                 return
 
-            modal = tk.Toplevel(self.root)
-            modal.title("Editar Servicio")
-            modal.geometry("560x390")
-            modal.configure(bg=self.colores["fondo_main"])
-            modal.transient(self.root)
-            modal.grab_set()
-            modal.resizable(False, False)
-
-            tk.Label(
-                modal,
-                text="Editar servicio y precio base",
-                bg=self.colores["fondo_main"],
-                fg=self.colores["sidebar"],
-                font=("Arial", 14, "bold")
-            ).pack(pady=(20, 14))
-
-            frame = tk.Frame(modal, bg=self.colores["fondo_main"])
-            frame.pack(fill="both", expand=True, padx=25)
+            modal, frame = self._crear_modal_corporativo(
+                "Editar servicio",
+                "Actualizar descripción y precio base",
+                ancho=650,
+                alto=520,
+                icono="✎"
+            )
+            frame.grid_columnconfigure(1, weight=1)
 
             tk.Label(frame, text="Nombre:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=0, column=0, sticky="nw", pady=7)
             ent_nombre = tk.Entry(frame, width=48)
@@ -1882,7 +4235,7 @@ class DashboardSGC:
                 costo_txt = ent_costo.get().strip().replace(",", ".")
 
                 if not nombre or not descripcion or not costo_txt:
-                    messagebox.showwarning("Datos incompletos", "Complete nombre, descripción y precio.")
+                    self._mensaje_corporativo("Datos incompletos", "Complete nombre, descripción y precio.", tipo="advertencia")
                     return
 
                 try:
@@ -1890,7 +4243,7 @@ class DashboardSGC:
                     if costo <= 0:
                         raise ValueError
                 except ValueError:
-                    messagebox.showwarning("Precio inválido", "Ingrese un precio base mayor que cero.")
+                    self._mensaje_corporativo("Precio inválido", "Ingrese un precio base mayor que cero.", tipo="advertencia")
                     return
 
                 try:
@@ -1906,7 +4259,7 @@ class DashboardSGC:
                     )
                     if cur.fetchone():
                         conn.close()
-                        messagebox.showwarning("Servicio duplicado", "Ya existe otro servicio con ese nombre.")
+                        self._mensaje_corporativo("Servicio duplicado", "Ya existe otro servicio con ese nombre.", tipo="advertencia")
                         return
 
                     cur.execute(
@@ -1926,12 +4279,12 @@ class DashboardSGC:
                         f"Actualizó '{nombre}' con precio base ${costo:,.2f}."
                     )
 
-                    messagebox.showinfo("Éxito", "Servicio actualizado correctamente.")
+                    self._mensaje_corporativo("Servicio actualizado", "Los cambios fueron guardados correctamente.", tipo="exito")
                     modal.destroy()
                     self.mostrar_servicios()
 
                 except Exception as e:
-                    messagebox.showerror("Error", f"No se pudo actualizar el servicio: {e}")
+                    self._mensaje_corporativo("No se pudo actualizar", "Ocurrió un problema al guardar los cambios.", tipo="error", detalle=str(e))
 
             tk.Button(
                 modal,
@@ -1946,6 +4299,8 @@ class DashboardSGC:
             ).pack(pady=16)
 
         def eliminar_servicio_seleccionado():
+            if not self._requiere_administrador("eliminar servicios del catálogo"):
+                return
             valores = servicio_seleccionado()
             if not valores:
                 return
@@ -1953,9 +4308,15 @@ class DashboardSGC:
             servicio_id = int(valores[0])
             nombre = valores[1]
 
-            if not messagebox.askyesno(
-                "Confirmar eliminación",
-                f"¿Desea eliminar el servicio?\n\n{nombre}"
+            if not self._confirmar_corporativo(
+                "Eliminar servicio",
+                f"¿Desea eliminar {nombre} del catálogo?",
+                detalle=(
+                    "La eliminación solo será posible si el servicio "
+                    "no posee operaciones asociadas."
+                ),
+                texto_confirmar="Eliminar servicio",
+                peligro=True
             ):
                 return
 
@@ -1971,10 +4332,11 @@ class DashboardSGC:
 
                 if usos > 0:
                     conn.close()
-                    messagebox.showwarning(
+                    self._mensaje_corporativo(
                         "Servicio en uso",
-                        "Este servicio ya posee movimientos asociados y no puede eliminarse.\n"
-                        "Puede editar su nombre, descripción o precio base."
+                        "Este servicio no puede eliminarse porque ya posee movimientos asociados.",
+                        tipo="advertencia",
+                        detalle="Puede editar su nombre, descripción o precio base sin perder el historial."
                     )
                     return
 
@@ -1988,13 +4350,22 @@ class DashboardSGC:
                     f"Eliminó el servicio '{nombre}'."
                 )
 
-                messagebox.showinfo("Éxito", "Servicio eliminado correctamente.")
+                self._mensaje_corporativo(
+                    "Servicio eliminado",
+                    f"{nombre} fue eliminado correctamente del catálogo.",
+                    tipo="exito"
+                )
                 self.mostrar_servicios()
 
             except Exception as e:
-                messagebox.showerror("Error", f"No se pudo eliminar el servicio: {e}")
+                self._mensaje_corporativo(
+                    "No se pudo eliminar",
+                    "Ocurrió un problema al eliminar el servicio.",
+                    tipo="error",
+                    detalle=str(e)
+                )
 
-        tk.Button(
+        btn_agregar_servicio = tk.Button(
             top_bar,
             text="➕ Agregar Servicio",
             bg=self.colores["sidebar"],
@@ -2004,9 +4375,10 @@ class DashboardSGC:
             padx=12,
             pady=6,
             command=self.agregar_servicio
-        ).pack(side="left")
+        )
+        btn_agregar_servicio.pack(side="left")
 
-        tk.Button(
+        btn_editar_servicio = tk.Button(
             top_bar,
             text="✏ Editar Servicio",
             bg=self.colores["botones_menu"],
@@ -2016,9 +4388,10 @@ class DashboardSGC:
             padx=12,
             pady=6,
             command=editar_servicio
-        ).pack(side="left", padx=8)
+        )
+        btn_editar_servicio.pack(side="left", padx=8)
 
-        tk.Button(
+        btn_eliminar_servicio = tk.Button(
             top_bar,
             text="🗑 Eliminar Servicio",
             bg=self.colores["rojo_eliminar"],
@@ -2028,7 +4401,13 @@ class DashboardSGC:
             padx=12,
             pady=6,
             command=eliminar_servicio_seleccionado
-        ).pack(side="left")
+        )
+        btn_eliminar_servicio.pack(side="left")
+
+        if not self._es_administrador():
+            btn_agregar_servicio.pack_forget()
+            btn_editar_servicio.pack_forget()
+            btn_eliminar_servicio.pack_forget()
 
         columnas = ("ID", "Nombre Servicio", "Descripción", "Precio Base USD")
         tabla_s = ttk.Treeview(panel, columns=columnas, show="headings", height=15)
@@ -2072,39 +4451,97 @@ class DashboardSGC:
                 )
             conn.close()
         except Exception as e:
-            messagebox.showerror("Error", f"No se pudo cargar el catálogo: {e}")
+            self._mensaje_corporativo(
+                "Catálogo no disponible",
+                "No se pudo cargar el catálogo de servicios.",
+                tipo="error",
+                detalle=str(e)
+            )
 
     def agregar_servicio(self):
-        modal = tk.Toplevel(self.root)
-        modal.title("Agregar Servicio")
-        modal.geometry("560x390")
-        modal.configure(bg=self.colores["fondo_main"])
-        modal.transient(self.root)
-        modal.grab_set()
-        modal.resizable(False, False)
+        if not self._requiere_administrador("agregar servicios al catálogo"):
+            return
+
+        modal, cuerpo = self._crear_modal_corporativo(
+            "Nuevo servicio",
+            "Agregar una opción al catálogo corporativo",
+            ancho=650,
+            alto=520,
+            icono="＋",
+        )
+
+        form = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        form.pack(fill="both", expand=True)
+        form.grid_columnconfigure(1, weight=1)
 
         tk.Label(
-            modal,
-            text="Agregar nuevo servicio",
+            form,
+            text="Nombre del servicio",
             bg=self.colores["fondo_main"],
             fg=self.colores["sidebar"],
-            font=("Arial", 14, "bold")
-        ).pack(pady=(20, 14))
+            font=("Arial", 9, "bold"),
+        ).grid(row=0, column=0, sticky="nw", padx=(0, 14), pady=8)
 
-        frame = tk.Frame(modal, bg=self.colores["fondo_main"])
-        frame.pack(fill="both", expand=True, padx=25)
+        marco_nombre = tk.Frame(
+            form,
+            bg="white",
+            highlightbackground="#d9d1c7",
+            highlightthickness=1,
+        )
+        marco_nombre.grid(row=0, column=1, sticky="ew", pady=7)
 
-        tk.Label(frame, text="Nombre:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=0, column=0, sticky="nw", pady=7)
-        entry_nombre = tk.Entry(frame, width=48)
-        entry_nombre.grid(row=0, column=1, pady=7)
+        entry_nombre = tk.Entry(
+            marco_nombre,
+            font=("Arial", 10),
+            relief="flat",
+            bd=0,
+        )
+        entry_nombre.pack(fill="x", padx=10, pady=8)
 
-        tk.Label(frame, text="Descripción:", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=1, column=0, sticky="nw", pady=7)
-        txt_desc = tk.Text(frame, width=46, height=7, wrap="word")
-        txt_desc.grid(row=1, column=1, pady=7)
+        tk.Label(
+            form,
+            text="Descripción",
+            bg=self.colores["fondo_main"],
+            fg=self.colores["sidebar"],
+            font=("Arial", 9, "bold"),
+        ).grid(row=1, column=0, sticky="nw", padx=(0, 14), pady=8)
 
-        tk.Label(frame, text="Precio base (USD):", bg=self.colores["fondo_main"], font=("Arial", 9, "bold")).grid(row=2, column=0, sticky="w", pady=7)
-        entry_costo = tk.Entry(frame, width=20)
-        entry_costo.grid(row=2, column=1, sticky="w", pady=7)
+        txt_desc = tk.Text(
+            form,
+            height=7,
+            wrap="word",
+            font=("Arial", 10),
+            relief="solid",
+            bd=1,
+        )
+        txt_desc.grid(row=1, column=1, sticky="ew", pady=7)
+
+        tk.Label(
+            form,
+            text="Precio base (USD)",
+            bg=self.colores["fondo_main"],
+            fg=self.colores["sidebar"],
+            font=("Arial", 9, "bold"),
+        ).grid(row=2, column=0, sticky="w", padx=(0, 14), pady=8)
+
+        marco_precio = tk.Frame(
+            form,
+            bg="white",
+            highlightbackground="#d9d1c7",
+            highlightthickness=1,
+        )
+        marco_precio.grid(row=2, column=1, sticky="ew", pady=7)
+
+        entry_costo = tk.Entry(
+            marco_precio,
+            font=("Arial", 10),
+            relief="flat",
+            bd=0,
+        )
+        entry_costo.pack(fill="x", padx=10, pady=8)
+
+        botones = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        botones.pack(fill="x", pady=(18, 0))
 
         def guardar():
             nombre = entry_nombre.get().strip()
@@ -2112,7 +4549,11 @@ class DashboardSGC:
             costo_txt = entry_costo.get().strip().replace(",", ".")
 
             if not nombre or not desc or not costo_txt:
-                messagebox.showwarning("Atención", "Complete todos los campos.")
+                self._mensaje_corporativo(
+                    "Datos incompletos",
+                    "Complete nombre, descripción y precio base.",
+                    tipo="advertencia",
+                )
                 return
 
             try:
@@ -2120,7 +4561,11 @@ class DashboardSGC:
                 if costo <= 0:
                     raise ValueError
             except ValueError:
-                messagebox.showwarning("Precio inválido", "Ingrese un precio base mayor que cero.")
+                self._mensaje_corporativo(
+                    "Precio inválido",
+                    "Ingrese un precio base mayor que cero.",
+                    tipo="advertencia",
+                )
                 return
 
             try:
@@ -2132,47 +4577,80 @@ class DashboardSGC:
                     SELECT id FROM servicios
                     WHERE LOWER(TRIM(nombre_servicio)) = LOWER(TRIM(?))
                     """,
-                    (nombre,)
+                    (nombre,),
                 )
+
                 if cursor.fetchone():
                     conn.close()
-                    messagebox.showwarning("Servicio duplicado", "Ya existe un servicio con ese nombre.")
+                    self._mensaje_corporativo(
+                        "Servicio duplicado",
+                        "Ya existe un servicio con ese nombre.",
+                        tipo="advertencia",
+                    )
                     return
 
                 cursor.execute(
                     """
-                    INSERT INTO servicios (nombre_servicio, descripcion, costo_base)
+                    INSERT INTO servicios (
+                        nombre_servicio, descripcion, costo_base
+                    )
                     VALUES (?, ?, ?)
                     """,
-                    (nombre, desc, costo)
+                    (nombre, desc, costo),
                 )
+
                 conn.commit()
                 conn.close()
 
                 registrar_accion(
                     getattr(self, "usuario_autenticado", "Sistema"),
                     "AGREGÓ SERVICIO",
-                    f"Agregó '{nombre}' con precio base ${costo:,.2f}."
+                    f"Agregó '{nombre}' con precio base ${costo:,.2f}.",
                 )
 
-                messagebox.showinfo("Éxito", "Servicio agregado correctamente.")
                 modal.destroy()
                 self.mostrar_servicios()
 
+                self._mensaje_corporativo(
+                    "Servicio agregado",
+                    f"{nombre} fue incorporado al catálogo.",
+                    tipo="exito",
+                    detalle=f"Precio base: $ {costo:,.2f}",
+                )
+
             except Exception as e:
-                messagebox.showerror("Error", f"No se pudo agregar el servicio: {e}")
+                self._mensaje_corporativo(
+                    "No se pudo agregar el servicio",
+                    "Ocurrió un problema al guardar la información.",
+                    tipo="error",
+                    detalle=str(e),
+                )
 
         tk.Button(
-            modal,
-            text="Guardar Servicio",
-            bg=self.colores["verde_aprobar"],
+            botones,
+            text="Cancelar",
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            font=("Arial", 10, "bold"),
+            relief="flat",
+            padx=20,
+            pady=8,
+            command=modal.destroy,
+        ).pack(side="right")
+
+        tk.Button(
+            botones,
+            text="Guardar servicio",
+            bg=self.colores["sidebar"],
             fg="white",
             font=("Arial", 10, "bold"),
             relief="flat",
-            padx=18,
+            padx=20,
             pady=8,
-            command=guardar
-        ).pack(pady=16)
+            command=guardar,
+        ).pack(side="right", padx=(0, 8))
+
+        entry_nombre.focus_set()
 
     def mostrar_notificaciones(self):
         panel = self.crear_panel_principal("Solicitudes y Citas Web")
@@ -2188,18 +4666,6 @@ class DashboardSGC:
 
         barra = tk.Frame(panel, bg=self.colores["fondo_main"])
         barra.pack(fill="x", padx=25, pady=(0, 8))
-
-        tk.Button(
-            barra,
-            text="📞 Marcar Contactado",
-            bg=self.colores["botones_menu"],
-            fg=self.colores["oro"],
-            font=("Arial", 10, "bold"),
-            relief="flat",
-            padx=12,
-            pady=7,
-            command=lambda: self.marcar_solicitud_contactada(tabla_web)
-        ).pack(side="left")
 
         tk.Button(
             barra,
@@ -2279,7 +4745,7 @@ class DashboardSGC:
             for fila in data.get("items", []):
                 estado = fila.get("estado") or "Pendiente"
 
-                # Pendiente y Contactado siguen siendo solicitudes activas.
+                # Solicitudes aún no finalizadas; se conserva compatibilidad con registros antiguos en Contactado.
                 if estado.lower() not in {"pendiente", "contactado"}:
                     continue
 
@@ -2302,62 +4768,6 @@ class DashboardSGC:
                 "",
                 "end",
                 values=("Error", "Servidor web", str(e), "", "", "", "")
-            )
-
-    def marcar_solicitud_contactada(self, tabla):
-        seleccion = tabla.selection()
-
-        if not seleccion:
-            messagebox.showwarning(
-                "Atención",
-                "Seleccione una solicitud."
-            )
-            return
-
-        valores = tabla.item(seleccion[0], "values")
-        estado_actual = str(valores[4] or "").strip()
-
-        if estado_actual.lower() == "contactado":
-            messagebox.showinfo(
-                "Información",
-                "Esta solicitud ya está marcada como Contactado."
-            )
-            return
-
-        if estado_actual.lower() != "pendiente":
-            messagebox.showinfo(
-                "Solicitud procesada",
-                "Esta solicitud ya no está pendiente."
-            )
-            return
-
-        try:
-            id_web = int(str(valores[0]).replace("ID Web: ", ""))
-
-            self._api_solicitudes(
-                "PATCH",
-                f"/api/solicitudes/{id_web}",
-                json={"estado": "Contactado"}
-            )
-
-            registrar_accion(
-                getattr(self, "usuario_autenticado", "Sistema"),
-                "CONTACTÓ SOLICITUD WEB",
-                f"Marcó como Contactado el formulario web ID {id_web}."
-            )
-
-            messagebox.showinfo(
-                "Contacto registrado",
-                "La solicitud fue marcada como Contactado.\n"
-                "Ahora puede aprobarse o rechazarse cuando corresponda."
-            )
-
-            self.mostrar_notificaciones()
-
-        except Exception as e:
-            messagebox.showerror(
-                "Error",
-                f"No se pudo actualizar la solicitud: {e}"
             )
 
     def mostrar_historial_solicitudes(self):
@@ -2478,9 +4888,11 @@ class DashboardSGC:
                     )
 
             except Exception as e:
-                messagebox.showerror(
-                    "Error",
-                    f"No se pudo cargar el historial: {e}"
+                self._mensaje_corporativo(
+                    "Historial no disponible",
+                    "No se pudo cargar el historial de solicitudes.",
+                    tipo="error",
+                    detalle=str(e)
                 )
 
         combo_estado.bind("<<ComboboxSelected>>", lambda e: cargar())
@@ -2503,59 +4915,70 @@ class DashboardSGC:
         item_seleccionado = tabla.selection()
 
         if not item_seleccionado:
-            messagebox.showwarning(
-                "Atención",
-                "Seleccione una solicitud para rechazarla."
+            self._mensaje_corporativo(
+                "Seleccione una solicitud",
+                "Primero seleccione la solicitud que desea rechazar.",
+                tipo="advertencia",
             )
             return
 
         valores = tabla.item(item_seleccionado, "values")
         estado_actual = valores[4]
 
-        # Evitar procesar una solicitud más de una vez.
         if str(estado_actual).lower() not in {"pendiente", "contactado"}:
-            messagebox.showinfo(
+            self._mensaje_corporativo(
                 "Solicitud procesada",
-                "Esta solicitud ya fue procesada."
+                "Esta solicitud ya fue procesada anteriormente.",
+                tipo="info",
             )
             return
 
         ref_id = valores[0]
+        cliente = valores[1] if len(valores) > 1 else "Cliente"
+        servicio = valores[2] if len(valores) > 2 else "—"
         id_web_real = ref_id.replace("ID Web: ", "")
 
-        confirmacion = messagebox.askyesno(
-            "Confirmar",
-            "¿Desea rechazar esta solicitud?"
-        )
-        if not confirmacion:
+        if not self._confirmar_corporativo(
+            "Rechazar solicitud",
+            f"¿Desea rechazar la solicitud de {cliente}?",
+            detalle=(
+                f"Servicio solicitado: {servicio}\n"
+                f"Referencia: {ref_id}\n\n"
+                "La solicitud pasará al historial como Rechazada."
+            ),
+            texto_confirmar="Rechazar solicitud",
+            peligro=True,
+        ):
             return
 
         try:
             self._api_solicitudes(
                 "PATCH",
                 f"/api/solicitudes/{int(id_web_real)}",
-                json={"estado": "Rechazado"}
+                json={"estado": "Rechazado"},
             )
 
-            usuario_actual = getattr(self, "usuario_autenticado", "Sistema")
             registrar_accion(
-                usuario_actual,
+                getattr(self, "usuario_autenticado", "Sistema"),
                 "RECHAZÓ SOLICITUD WEB",
-                f"Rechazó la solicitud web ID {id_web_real}."
+                f"Rechazó la solicitud web ID {id_web_real}.",
             )
 
-            messagebox.showinfo(
-                "Éxito",
-                "Solicitud rechazada correctamente."
-            )
-
-            # Al recargar, ya no aparecerá porque dejó de estar Pendiente.
             self.mostrar_notificaciones()
 
+            self._mensaje_corporativo(
+                "Solicitud rechazada",
+                "La solicitud fue movida correctamente al historial.",
+                tipo="exito",
+                detalle=f"Cliente: {cliente}\nServicio: {servicio}",
+            )
+
         except Exception as e:
-            messagebox.showerror(
-                "Error",
-                f"No se pudo rechazar la solicitud: {e}"
+            self._mensaje_corporativo(
+                "No se pudo rechazar",
+                "Ocurrió un problema al procesar la solicitud.",
+                tipo="error",
+                detalle=str(e),
             )
 
     def _mostrar_alerta_servicios_nuevos(self, panel):
@@ -2579,18 +5002,19 @@ class DashboardSGC:
             tk.Label(frame_alerta, text=f"• {nombre}", bg="#fff3cd", fg="#3b2f2f", font=("Arial", 10)).pack(anchor="w", padx=14, pady=1)
 
     def seleccionar_metodo_pago(self):
-        ventana = tk.Toplevel(self.root)
-        ventana.title("Método de pago")
-        ventana.geometry("450x220")
-        ventana.resizable(False, False)
-        ventana.transient(self.root)
-        ventana.grab_set()
+        ventana, cuerpo = self._crear_modal_corporativo(
+            "Método de pago",
+            "Información financiera de la asesoría",
+            ancho=560,
+            alto=330,
+            icono="$"
+        )
 
-        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 225
-        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 110
-        ventana.geometry(f"450x220+{x}+{y}")
-
-        tk.Label(ventana, text="Seleccione el método de pago del cliente:", font=("Arial", 11, "bold")).pack(pady=(18, 12))
+        tk.Label(
+            cuerpo, text="Seleccione cómo realizará el pago el cliente.",
+            bg=self.colores["fondo_main"], fg=self.colores["texto_oscuro"],
+            font=("Arial", 11, "bold")
+        ).pack(anchor="w", pady=(4, 16))
 
         resultado = {"valor": None}
 
@@ -2598,111 +5022,114 @@ class DashboardSGC:
             resultado["valor"] = valor
             ventana.destroy()
 
-        frame_botones = tk.Frame(ventana)
-        frame_botones.pack(pady=8)
+        opciones = [
+            ("Transferencia", "transferencia", "Transferencia bancaria"),
+            ("Efectivo", "efectivo", "Pago realizado en efectivo"),
+            ("Pago Móvil", "pago movil", "Pago móvil / transferencia inmediata"),
+        ]
 
-        tk.Button(frame_botones, text="Transferencia", width=16, bg="#6b1426", fg="white", font=("Arial", 10, "bold"), relief="flat", command=lambda: elegir("transferencia")).pack(side="left", padx=8)
-        tk.Button(frame_botones, text="Efectivo", width=16, bg="#2a9d8f", fg="white", font=("Arial", 10, "bold"), relief="flat", command=lambda: elegir("efectivo")).pack(side="left", padx=8)
-        tk.Button(frame_botones, text="Pago Móvil", width=16, bg="#d4af37", fg="black", font=("Arial", 10, "bold"), relief="flat", command=lambda: elegir("pago movil")).pack(side="left", padx=8)
+        for titulo, valor, descripcion in opciones:
+            tk.Button(
+                cuerpo,
+                text=f"{titulo}\n{descripcion}",
+                bg="white",
+                fg=self.colores["sidebar"],
+                activebackground="#f7efe9",
+                activeforeground=self.colores["sidebar"],
+                font=("Arial", 10, "bold"),
+                relief="flat",
+                anchor="w",
+                justify="left",
+                padx=14,
+                pady=9,
+                cursor="hand2",
+                command=lambda v=valor: elegir(v)
+            ).pack(fill="x", pady=3)
+
+        tk.Button(
+            cuerpo, text="Cancelar", bg=self.colores["botones_menu"],
+            fg=self.colores["oro"], font=("Arial", 10, "bold"),
+            relief="flat", padx=18, pady=7, command=ventana.destroy
+        ).pack(anchor="e", pady=(12, 0))
 
         ventana.wait_window()
         return resultado["valor"]
 
     def seleccionar_industria_cliente(self):
-        """Muestra un selector único y ordenado para clasificar la empresa del cliente."""
-        ventana = tk.Toplevel(self.root)
-        ventana.title("Clasificar empresa")
-        ventana.geometry("520x260")
-        ventana.configure(bg=self.colores["fondo_main"])
-        ventana.transient(self.root)
-        ventana.grab_set()
-        ventana.resizable(False, False)
-
-        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 260
-        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 130
-        ventana.geometry(f"520x260+{x}+{y}")
+        ventana, cuerpo = self._crear_modal_corporativo(
+            "Clasificación de empresa",
+            "Datos comerciales del nuevo cliente",
+            ancho=590,
+            alto=340,
+            icono="▦"
+        )
 
         tk.Label(
-            ventana,
-            text="Clasificación de la empresa",
-            bg=self.colores["fondo_main"],
-            fg=self.colores["sidebar"],
-            font=("Arial", 15, "bold")
-        ).pack(pady=(24, 5))
+            cuerpo, text="Seleccione la actividad o sector principal de la empresa.",
+            bg=self.colores["fondo_main"], fg=self.colores["texto_oscuro"],
+            font=("Arial", 11, "bold")
+        ).pack(anchor="w", pady=(4, 6))
 
         tk.Label(
-            ventana,
-            text="Seleccione una sola actividad o sector principal del cliente.",
-            bg=self.colores["fondo_main"],
-            fg=self.colores["texto_oscuro"],
-            font=("Arial", 10)
-        ).pack(pady=(0, 18))
+            cuerpo,
+            text="Esta clasificación se utiliza para generar automáticamente el código del cliente.",
+            bg=self.colores["fondo_main"], fg="#766b6d",
+            font=("Arial", 9), wraplength=520, justify="left"
+        ).pack(anchor="w", pady=(0, 14))
 
         combo = ttk.Combobox(
-            ventana,
-            state="readonly",
-            width=42,
-            values=TIPOS_EMPRESA,
-            font=("Arial", 10)
+            cuerpo, state="readonly", values=TIPOS_EMPRESA,
+            font=("Arial", 10), width=48
         )
-        combo.pack(ipady=4)
+        combo.pack(fill="x", ipady=5)
         combo.current(0)
 
         resultado = {"valor": None}
 
-        def confirmar():
+        def confirmar(event=None):
             valor = combo.get().strip()
             if not valor:
-                messagebox.showwarning(
-                    "Clasificación requerida",
-                    "Seleccione el tipo de empresa.",
-                    parent=ventana
-                )
                 return
             resultado["valor"] = valor
             ventana.destroy()
 
-        frame_botones = tk.Frame(ventana, bg=self.colores["fondo_main"])
-        frame_botones.pack(pady=22)
+        botones = tk.Frame(cuerpo, bg=self.colores["fondo_main"])
+        botones.pack(fill="x", pady=(22, 0))
 
         tk.Button(
-            frame_botones,
-            text="Confirmar",
-            width=15,
-            bg=self.colores["sidebar"],
-            fg="white",
-            font=("Arial", 10, "bold"),
-            relief="flat",
-            command=confirmar
-        ).pack(side="left", padx=6)
+            botones, text="Cancelar", bg=self.colores["botones_menu"],
+            fg=self.colores["oro"], font=("Arial", 10, "bold"),
+            relief="flat", padx=18, pady=7, command=ventana.destroy
+        ).pack(side="right")
 
         tk.Button(
-            frame_botones,
-            text="Cancelar",
-            width=15,
-            bg=self.colores["botones_menu"],
-            fg="white",
-            font=("Arial", 10, "bold"),
-            relief="flat",
-            command=ventana.destroy
-        ).pack(side="left", padx=6)
+            botones, text="Confirmar clasificación", bg=self.colores["sidebar"],
+            fg="white", font=("Arial", 10, "bold"), relief="flat",
+            padx=18, pady=7, command=confirmar
+        ).pack(side="right", padx=(0, 8))
 
+        combo.bind("<Return>", confirmar)
         ventana.wait_window()
         return resultado["valor"]
 
     def aprobar_y_calcular_solicitud(self, tabla):
         item_seleccionado = tabla.selection()
         if not item_seleccionado:
-            messagebox.showwarning("Atención", "Por favor, seleccione una solicitud de la lista.")
+            self._mensaje_corporativo(
+                "Seleccione una solicitud",
+                "Primero seleccione una solicitud de la lista.",
+                tipo="advertencia"
+            )
             return
             
         valores = tabla.item(item_seleccionado, "values")
         ref_id, cliente_nombre, servicio_interes, descripcion_negocio, estado_actual, correo_real, telefono_real = valores
 
         if str(estado_actual).lower() not in {"pendiente", "contactado"}:
-            messagebox.showinfo(
+            self._mensaje_corporativo(
                 "Solicitud procesada",
-                "Esta solicitud ya fue procesada."
+                "Esta solicitud ya fue procesada anteriormente.",
+                tipo="info"
             )
             return
 
@@ -2714,9 +5141,24 @@ class DashboardSGC:
 
         tasa_bcv = obtener_tasa_bcv_automatica()
         if not tasa_bcv:
-            tasa_bcv_input = simpledialog.askstring("Tasa de Cambio", "Ingrese tasa BCV manual:")
-            if not tasa_bcv_input: return
-            tasa_bcv = float(tasa_bcv_input)
+            tasa_bcv_input = self._dialogo_texto_corporativo(
+                "Tasa BCV manual",
+                "No fue posible obtener la tasa automáticamente.",
+                etiqueta="Ingrese la tasa BCV (Bs/USD):"
+            )
+            if not tasa_bcv_input:
+                return
+            try:
+                tasa_bcv = float(tasa_bcv_input.replace(",", "."))
+                if tasa_bcv <= 0:
+                    raise ValueError
+            except ValueError:
+                self._mensaje_corporativo(
+                    "Tasa inválida",
+                    "La tasa BCV debe ser un número mayor que cero.",
+                    tipo="advertencia"
+                )
+                return
 
         metodo_pago = self.seleccionar_metodo_pago()
         if not metodo_pago:
@@ -2727,10 +5169,11 @@ class DashboardSGC:
             cursor_local = conn_local.cursor()
 
             codigo_cliente = generar_id_cliente(industria_cliente, conn_local)
-            nombre_contacto = simpledialog.askstring(
+            nombre_contacto = self._dialogo_texto_corporativo(
                 "Persona de contacto",
-                "Nombre de la persona de contacto del cliente:",
-                initialvalue=cliente_nombre
+                "Indique quién será la persona de contacto principal de este cliente.",
+                etiqueta="Nombre y apellido:",
+                valor_inicial=cliente_nombre
             )
             if not nombre_contacto:
                 conn_local.close()
@@ -2763,13 +5206,13 @@ class DashboardSGC:
             # Si llegó "Otro servicio" desde la web, el asesor define el precio
             # una sola vez y el servicio queda incorporado al catálogo.
             if not res_serv:
-                precio_personalizado = simpledialog.askstring(
+                precio_personalizado = self._dialogo_texto_corporativo(
                     "Nuevo servicio detectado",
                     (
-                        f"El servicio solicitado no existe todavía en el catálogo:\n\n"
-                        f"{servicio_interes}\n\n"
-                        "Ingrese su precio base en USD para incorporarlo:"
-                    )
+                        "Este servicio todavía no existe en el catálogo.\n\n"
+                        f"{servicio_interes}"
+                    ),
+                    etiqueta="Precio base en USD:"
                 )
                 if not precio_personalizado:
                     conn_local.close()
@@ -2783,9 +5226,10 @@ class DashboardSGC:
                         raise ValueError
                 except ValueError:
                     conn_local.close()
-                    messagebox.showwarning(
+                    self._mensaje_corporativo(
                         "Precio inválido",
-                        "El precio base debe ser un número mayor que cero."
+                        "El precio base debe ser un número mayor que cero.",
+                        tipo="advertencia"
                     )
                     return
 
@@ -2844,13 +5288,31 @@ class DashboardSGC:
             usuario_actual = getattr(self, 'usuario_autenticado', 'Sistema')
             registrar_accion(usuario_actual, "APROBÓ SERVICIO WEB", f"Aprobó orden para {cliente_nombre}. Servicio: {servicio_interes}. Total: {total_bs:,.2f} Bs.")
 
-            messagebox.showinfo("Éxito", f"¡Sincronización Completada!\n\nTasa BCV: {tasa_bcv:.4f} Bs.\nTotal: {total_bs:,.2f} Bs.")
+            self._mensaje_corporativo(
+                "Asesoría aprobada",
+                f"{cliente_nombre} fue integrado correctamente como cliente.",
+                tipo="exito",
+                detalle=(
+                    f"Servicio: {servicio_interes}\n"
+                    f"Código cliente: {codigo_cliente}\n"
+                    f"Tasa BCV: {tasa_bcv:.4f} Bs/USD\n"
+                    f"Total: $ {total_usd:,.2f}  ·  Bs. {total_bs:,.2f}"
+                )
+            )
             self.mostrar_notificaciones()
 
         except Exception as e:
-            messagebox.showerror("Error", f"No se pudo completar el proceso: {e}")
+            self._mensaje_corporativo(
+                "No se pudo completar la operación",
+                "Ocurrió un problema durante la aprobación de la asesoría.",
+                tipo="error",
+                detalle=str(e)
+            )
             
     def mostrar_historial(self):
+
+        if not self._requiere_administrador("consultar el historial completo del sistema"):
+            return
         """Renderiza la pantalla de auditoría interna de la firma."""
         panel = self.crear_panel_principal("Historial de Actividades y Auditoría")
         
@@ -2972,7 +5434,12 @@ class DashboardSGC:
             self.abrir_chat()
             self.root.after(300, lambda: self.seleccionar_usuario_chat(remitente))
         except Exception as e:
-            messagebox.showerror("Chat", f"No se pudo abrir la conversación.\n\n{e}")
+            self._mensaje_corporativo(
+                "No se pudo abrir la conversación",
+                "Ocurrió un problema al abrir el chat.",
+                tipo="error",
+                detalle=str(e)
+            )
 
     def seleccionar_usuario_chat(self, username):
         try:

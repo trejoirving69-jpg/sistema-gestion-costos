@@ -20,3 +20,54 @@ base de datos/data/chat_server.db
 # Archivos generados del chat
 base de datos/archivos_chat/
 
+
+# ===== SGC MACILITANO: archivos locales / generados =====
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# PyInstaller
+build/
+dist/
+
+# Bases de datos y datos locales
+*.db
+*.sqlite
+*.sqlite3
+
+# Chat / descargas locales
+archivos_chat/
+
+# Secretos / configuración local
+.env
+.env.*
+*.local
+secrets.*
+credentials.*
+
+# IDE / sistema operativo
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Empaquetados temporales
+*.zip
+*.rar
+*.7z
+
+# Auditorías locales
+AUDITORIA_PRE_FINAL.txt
+auditoria_pre_final.py
+
+# Backups creados por la limpieza
+_backup_seguridad_*/
+
+*.spec
