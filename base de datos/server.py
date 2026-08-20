@@ -2,6 +2,7 @@ import os
 import sqlite3
 import uuid
 import secrets
+import hashlib
 from pathlib import Path
 from functools import wraps
 
@@ -37,6 +38,11 @@ API_KEY = os.getenv(
 # Sesiones temporales del servidor.
 # Para producción posteriormente las pasaremos a almacenamiento persistente.
 SESIONES = {}
+
+# Protección anti-spam de solicitudes web.
+SOLICITUD_COOLDOWN_HOURS = 24
+RATE_LIMIT_SECRET = os.getenv('RATE_LIMIT_SECRET') or API_KEY or 'macilitano-rate-limit-v1'
+
 
 # ============================================================
 # BASE DE DATOS
@@ -145,6 +151,11 @@ def init_db():
 
         CREATE INDEX IF NOT EXISTS idx_solicitudes_web_estado
         ON solicitudes_web(estado, id);
+
+        CREATE TABLE IF NOT EXISTS limites_solicitudes_web (
+            ip_hash TEXT PRIMARY KEY,
+            ultima_solicitud TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
     """)
 
     # Migración para instalaciones que ya tenían solicitudes_web.
@@ -912,6 +923,14 @@ def notifications():
 # SOLICITUDES WEB (Landing Page -> Sistema de escritorio)
 # ============================================================
 
+def _ip_cliente():
+    return (request.headers.get('X-Real-IP') or request.remote_addr or 'desconocida').strip()
+
+def _hash_ip_cliente():
+    material = f'{RATE_LIMIT_SECRET}:{_ip_cliente()}'.encode('utf-8')
+    return hashlib.sha256(material).hexdigest()
+
+
 def _cors_solicitudes(response):
     """CORS temporal para la landing durante la fase de pruebas."""
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -927,7 +946,6 @@ def solicitudes_options():
 
 @app.post("/api/solicitudes")
 def crear_solicitud_web():
-    """Endpoint público usado por el formulario del sitio web."""
     data = request.get_json(silent=True) or request.form.to_dict() or {}
 
     nombre = (data.get("nombre") or "").strip()
@@ -937,7 +955,6 @@ def crear_solicitud_web():
     custom_servicio = (data.get("custom_servicio") or "").strip()
     if servicio.lower() == "otro":
         servicio = custom_servicio
-
     descripcion = (data.get("descripcion_negocio") or data.get("descripcion") or data.get("mensaje") or "").strip()
     correo = (data.get("correo") or data.get("email") or "").strip()
     telefono = (data.get("telefono") or data.get("telefono_contacto") or "").strip()
@@ -946,19 +963,59 @@ def crear_solicitud_web():
         return _cors_solicitudes(jsonify({
             "ok": False,
             "status": "error",
-            "error": "Faltan datos obligatorios",
             "message": "Completa nombre, servicio, descripción, correo y teléfono."
         })), 400
 
+    ip_hash = _hash_ip_cliente()
     conn = db()
-    cur = conn.execute("""
-        INSERT INTO solicitudes_web
-        (cliente_potencial, servicio_interes, descripcion, correo, telefono, estado)
-        VALUES (?, ?, ?, ?, ?, 'Pendiente')
-    """, (cliente, servicio, descripcion, correo, telefono))
-    conn.commit()
-    solicitud_id = cur.lastrowid
-    conn.close()
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        limite = conn.execute(
+            "SELECT ultima_solicitud, "
+            "MAX(0, CAST((julianday(datetime(ultima_solicitud, '+' || ? || ' hours')) - julianday('now')) * 86400 AS INTEGER)) AS segundos_restantes "
+            "FROM limites_solicitudes_web WHERE ip_hash = ?",
+            (SOLICITUD_COOLDOWN_HOURS, ip_hash)
+        ).fetchone()
+
+        if limite and limite["ultima_solicitud"] and int(limite["segundos_restantes"] or 0) > 0:
+            segundos = int(limite["segundos_restantes"])
+            horas = max(1, (segundos + 3599) // 3600)
+            conn.rollback()
+            conn.close()
+            return _cors_solicitudes(jsonify({
+                "ok": False,
+                "status": "rate_limited",
+                "message": "Ya se registró una solicitud desde esta conexión durante las últimas 24 horas.",
+                "retry_after_seconds": segundos,
+                "retry_after_hours": horas
+            })), 429
+
+        conn.execute(
+            "INSERT INTO limites_solicitudes_web(ip_hash, ultima_solicitud) "
+            "VALUES (?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(ip_hash) DO UPDATE SET ultima_solicitud = CURRENT_TIMESTAMP",
+            (ip_hash,)
+        )
+
+        cur = conn.execute(
+            "INSERT INTO solicitudes_web "
+            "(cliente_potencial, servicio_interes, descripcion, correo, telefono, estado) "
+            "VALUES (?, ?, ?, ?, ?, 'Pendiente')",
+            (cliente, servicio, descripcion, correo, telefono)
+        )
+
+        solicitud_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+
+    except Exception:
+        try:
+            conn.rollback()
+            conn.close()
+        except Exception:
+            pass
+        raise
 
     return _cors_solicitudes(jsonify({
         "ok": True,
