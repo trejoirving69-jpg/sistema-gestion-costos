@@ -141,6 +141,12 @@ def inicializar_base_datos():
     )
     """)
 
+    # Unificación de roles: todo asesor operativo usa el rol "Usuario".
+    # Se conservan IDs, contraseñas y relaciones existentes.
+    cursor.execute(
+        "UPDATE usuarios SET rol = 'Usuario' WHERE LOWER(TRIM(rol)) = 'asesor'"
+    )
+
     # 2. Tabla Clientes
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS clientes (

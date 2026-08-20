@@ -8,6 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import datetime
+import calendar
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from reportlab.lib.pagesizes import letter
@@ -425,6 +426,155 @@ class DashboardSGC:
             ventana.geometry(f"{ancho}x{alto}+{x}+{y}")
         except Exception:
             ventana.geometry(f"{ancho}x{alto}")
+
+    def _configurar_entrada_telefono(self, entrada, max_digitos=11):
+        """Restringe un Entry de teléfono a números y una longitud máxima."""
+        def validar(valor_nuevo):
+            return valor_nuevo == "" or (valor_nuevo.isdigit() and len(valor_nuevo) <= max_digitos)
+
+        comando = (self.root.register(validar), "%P")
+        entrada.configure(validate="key", validatecommand=comando)
+        return entrada
+
+    def _abrir_selector_fecha(self, entrada, titulo="Seleccionar fecha"):
+        """Abre un calendario compacto sin dependencias externas y escribe AAAA-MM-DD."""
+        actual = datetime.date.today()
+        texto = entrada.get().strip()
+        for formato in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                actual = datetime.datetime.strptime(texto, formato).date()
+                break
+            except ValueError:
+                continue
+
+        estado = {"anio": actual.year, "mes": actual.month}
+        modal = tk.Toplevel(self.root)
+        modal.title(titulo)
+        modal.configure(bg=self.colores["fondo_main"])
+        modal.resizable(False, False)
+        modal.transient(self.root)
+        modal.grab_set()
+
+        cabecera = tk.Frame(modal, bg=self.colores["fondo_main"])
+        cabecera.pack(fill="x", padx=12, pady=(12, 6))
+
+        titulo_mes = tk.Label(
+            cabecera,
+            bg=self.colores["fondo_main"],
+            fg=self.colores["sidebar"],
+            font=("Arial", 10, "bold"),
+            width=20,
+        )
+        titulo_mes.pack(side="left", expand=True)
+
+        cuerpo = tk.Frame(modal, bg=self.colores["fondo_main"])
+        cuerpo.pack(padx=12, pady=4)
+
+        def seleccionar(dia):
+            fecha = datetime.date(estado["anio"], estado["mes"], dia)
+            entrada.delete(0, tk.END)
+            entrada.insert(0, fecha.strftime("%Y-%m-%d"))
+            try:
+                entrada.event_generate("<<FechaSeleccionada>>")
+            except Exception:
+                pass
+            modal.destroy()
+
+        def dibujar():
+            for widget in cuerpo.winfo_children():
+                widget.destroy()
+
+            nombres_meses = (
+                "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+            )
+            titulo_mes.configure(text=f"{nombres_meses[estado['mes'] - 1]} {estado['anio']}")
+
+            for col, nombre in enumerate(("Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do")):
+                tk.Label(
+                    cuerpo,
+                    text=nombre,
+                    width=4,
+                    bg=self.colores["fondo_main"],
+                    fg="#766b6d",
+                    font=("Arial", 8, "bold"),
+                ).grid(row=0, column=col, padx=1, pady=1)
+
+            semanas = calendar.Calendar(firstweekday=0).monthdayscalendar(estado["anio"], estado["mes"])
+            hoy = datetime.date.today()
+            for fila, semana in enumerate(semanas, start=1):
+                for col, dia in enumerate(semana):
+                    if dia == 0:
+                        tk.Label(cuerpo, text="", width=4, bg=self.colores["fondo_main"]).grid(row=fila, column=col)
+                        continue
+                    es_hoy = (estado["anio"], estado["mes"], dia) == (hoy.year, hoy.month, hoy.day)
+                    tk.Button(
+                        cuerpo,
+                        text=str(dia),
+                        width=3,
+                        relief="flat",
+                        bg=self.colores["sidebar"] if es_hoy else "white",
+                        fg="white" if es_hoy else self.colores["texto_oscuro"],
+                        activebackground=self.colores["oro"],
+                        command=lambda d=dia: seleccionar(d),
+                    ).grid(row=fila, column=col, padx=1, pady=1)
+
+        def cambiar_mes(delta):
+            mes = estado["mes"] + delta
+            anio = estado["anio"]
+            if mes < 1:
+                mes = 12
+                anio -= 1
+            elif mes > 12:
+                mes = 1
+                anio += 1
+            estado["mes"] = mes
+            estado["anio"] = anio
+            dibujar()
+
+        tk.Button(
+            cabecera, text="‹", width=3, command=lambda: cambiar_mes(-1),
+            bg=self.colores["botones_menu"], fg=self.colores["oro"], relief="flat"
+        ).pack(side="left", before=titulo_mes)
+        tk.Button(
+            cabecera, text="›", width=3, command=lambda: cambiar_mes(1),
+            bg=self.colores["botones_menu"], fg=self.colores["oro"], relief="flat"
+        ).pack(side="right")
+
+        pie = tk.Frame(modal, bg=self.colores["fondo_main"])
+        pie.pack(fill="x", padx=12, pady=(6, 12))
+        tk.Button(
+            pie,
+            text="Hoy",
+            command=lambda: seleccionar(datetime.date.today().day)
+            if (estado["anio"], estado["mes"]) == (datetime.date.today().year, datetime.date.today().month)
+            else self._poner_fecha_hoy(entrada, modal),
+            bg=self.colores["sidebar"],
+            fg="white",
+            relief="flat",
+            padx=14,
+        ).pack(side="left")
+        tk.Button(
+            pie,
+            text="Cancelar",
+            command=modal.destroy,
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            relief="flat",
+            padx=14,
+        ).pack(side="right")
+
+        dibujar()
+        modal.update_idletasks()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - modal.winfo_reqwidth()) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - modal.winfo_reqheight()) // 2)
+        modal.geometry(f"+{x}+{y}")
+
+    def _poner_fecha_hoy(self, entrada, modal=None):
+        entrada.delete(0, tk.END)
+        entrada.insert(0, datetime.date.today().strftime("%Y-%m-%d"))
+        if modal is not None:
+            modal.destroy()
 
     def _crear_modal_corporativo(self, titulo, subtitulo="", ancho=520, alto=320, icono="◆"):
         ventana = tk.Toplevel(self.root)
@@ -1360,6 +1510,23 @@ class DashboardSGC:
             lambda event: self.actualizar_tabla_clientes()
         )
 
+        def limpiar_filtros_clientes():
+            self.entry_buscar.delete(0, tk.END)
+            self.combo_servicio.set("Todos")
+            self.combo_tipo_cliente.set("Todos")
+            self.actualizar_tabla_clientes()
+
+        tk.Button(
+            filtros_bar,
+            text="Limpiar",
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            font=("Arial", 9, "bold"),
+            relief="flat",
+            padx=8,
+            command=limpiar_filtros_clientes
+        ).pack(side="left", padx=(8, 0))
+
         try:
             conn = obtener_conexion()
             cursor = conn.cursor()
@@ -2078,9 +2245,15 @@ class DashboardSGC:
             font=("Arial", 9, "bold")
         ).pack(side="left")
 
-        entry_desde = tk.Entry(filtros, width=11)
-        entry_desde.pack(side="left", padx=(5, 6))
-        entry_desde.insert(0, "")
+        marco_desde = tk.Frame(filtros, bg=self.colores["fondo_main"])
+        marco_desde.pack(side="left", padx=(5, 8))
+        entry_desde = tk.Entry(marco_desde, width=10)
+        entry_desde.pack(side="left")
+        tk.Button(
+            marco_desde, text="📅", width=2, relief="flat",
+            bg=self.colores["botones_menu"], fg=self.colores["oro"],
+            command=lambda: self._abrir_selector_fecha(entry_desde, "Fecha desde")
+        ).pack(side="left", padx=(2, 0))
 
         tk.Label(
             filtros, text="Hasta:",
@@ -2089,13 +2262,30 @@ class DashboardSGC:
             font=("Arial", 9, "bold")
         ).pack(side="left")
 
-        entry_hasta = tk.Entry(filtros, width=11)
-        entry_hasta.pack(side="left", padx=(5, 6))
-        entry_hasta.insert(0, "")
+        marco_hasta = tk.Frame(filtros, bg=self.colores["fondo_main"])
+        marco_hasta.pack(side="left", padx=(5, 8))
+        entry_hasta = tk.Entry(marco_hasta, width=10)
+        entry_hasta.pack(side="left")
+        tk.Button(
+            marco_hasta, text="📅", width=2, relief="flat",
+            bg=self.colores["botones_menu"], fg=self.colores["oro"],
+            command=lambda: self._abrir_selector_fecha(entry_hasta, "Fecha hasta")
+        ).pack(side="left", padx=(2, 0))
+
+        tk.Button(
+            filtros,
+            text="Limpiar",
+            bg=self.colores["botones_menu"],
+            fg=self.colores["oro"],
+            font=("Arial", 9, "bold"),
+            relief="flat",
+            padx=8,
+            command=lambda: limpiar_filtros()
+        ).pack(side="left", padx=3)
 
         tk.Label(
             panel,
-            text="Fechas opcionales en formato AAAA-MM-DD.",
+            text="Las fechas pueden seleccionarse con el calendario.",
             bg=self.colores["fondo_main"],
             fg="#777",
             font=("Arial", 8, "italic")
@@ -2865,30 +3055,19 @@ class DashboardSGC:
             command=exportar_excel
         ).pack(side="right", padx=6)
 
-        tk.Button(
-            filtros,
-            text="Limpiar",
-            bg=self.colores["botones_menu"],
-            fg=self.colores["oro"],
-            font=("Arial", 9, "bold"),
-            relief="flat",
-            padx=8,
-            command=limpiar_filtros
-        ).pack(side="right", padx=3)
-
-        tk.Button(
-            filtros,
-            text="Aplicar",
-            bg=self.colores["sidebar"],
-            fg="white",
-            font=("Arial", 9, "bold"),
-            relief="flat",
-            padx=8,
-            command=cargar_tabla
-        ).pack(side="right", padx=3)
-
         # Doble clic = detalle.
         tabla.bind("<Double-1>", lambda event: ver_detalle())
+
+        # Los filtros se aplican automáticamente; no hace falta botón "Aplicar".
+        combo_cliente.bind("<<ComboboxSelected>>", lambda event: cargar_tabla())
+        combo_servicio.bind("<<ComboboxSelected>>", lambda event: cargar_tabla())
+        combo_estado.bind("<<ComboboxSelected>>", lambda event: cargar_tabla())
+        entry_desde.bind("<Return>", lambda event: cargar_tabla())
+        entry_desde.bind("<FocusOut>", lambda event: cargar_tabla())
+        entry_hasta.bind("<Return>", lambda event: cargar_tabla())
+        entry_hasta.bind("<FocusOut>", lambda event: cargar_tabla())
+        entry_desde.bind("<<FechaSeleccionada>>", lambda event: cargar_tabla())
+        entry_hasta.bind("<<FechaSeleccionada>>", lambda event: cargar_tabla())
 
         cargar_filtros()
         cargar_tabla()
@@ -2918,7 +3097,7 @@ class DashboardSGC:
                                 command=self.modal_agregar_asesor)
         btn_agregar.pack(side="right", padx=5)
 
-        columnas = ("ID", "Usuario", "Nombre", "Correo", "Teléfono", "Especialidad", "Fecha Contratación", "Salario", "Activo")
+        columnas = ("ID Usuario", "Usuario", "Nombre", "Correo", "Teléfono", "Especialidad", "Fecha Contratación", "Salario", "Activo")
         self.tabla_asesores = ttk.Treeview(panel, columns=columnas, show="headings", height=10)
         for col in columnas:
             self.tabla_asesores.heading(col, text=col)
@@ -2941,7 +3120,22 @@ class DashboardSGC:
 
             conn = obtener_conexion()
             cur = conn.cursor()
-            cur.execute("SELECT a.id, u.username, a.nombre, a.correo, a.telefono, a.especialidad, a.fecha_contratacion, a.salario, a.activo FROM asesores a LEFT JOIN usuarios u ON a.usuario_id = u.id ORDER BY a.id")
+            cur.execute("""
+                SELECT
+                    u.id,
+                    u.username,
+                    COALESCE(a.nombre, u.username),
+                    COALESCE(a.correo, ''),
+                    COALESCE(a.telefono, ''),
+                    COALESCE(a.especialidad, ''),
+                    COALESCE(a.fecha_contratacion, ''),
+                    COALESCE(a.salario, 0),
+                    COALESCE(a.activo, 'Activo')
+                FROM usuarios u
+                LEFT JOIN asesores a ON a.usuario_id = u.id
+                WHERE LOWER(TRIM(u.rol)) <> 'administrador'
+                ORDER BY u.username COLLATE NOCASE
+            """)
             for fila in cur.fetchall():
                 fila = list(fila)
                 fila[7] = f"${fila[7]:,.2f}" if fila[7] is not None and fila[7] != 0 else ""
@@ -3014,6 +3208,7 @@ class DashboardSGC:
 
         etiqueta("Teléfono", 4)
         ent_tel = entrada(4)
+        self._configurar_entrada_telefono(ent_tel)
 
         etiqueta("Especialidad", 5)
         ent_esp = entrada(5)
@@ -3021,6 +3216,11 @@ class DashboardSGC:
         etiqueta("Fecha de contratación", 6)
         ent_fecha = entrada(6)
         ent_fecha.insert(0, datetime.date.today().strftime("%Y-%m-%d"))
+        tk.Button(
+            form, text="📅", width=3, relief="flat",
+            bg=self.colores["botones_menu"], fg=self.colores["oro"],
+            command=lambda: self._abrir_selector_fecha(ent_fecha, "Fecha de contratación")
+        ).grid(row=6, column=2, padx=(6, 0))
 
         etiqueta("Salario mensual", 7)
         ent_salario = entrada(7)
@@ -3028,8 +3228,8 @@ class DashboardSGC:
         tk.Label(
             form,
             text=(
-                "La cuenta creada tendrá rol Asesor. "
-                "La fecha admite AAAA-MM-DD o DD/MM/AAAA."
+                "La cuenta creada tendrá rol Usuario (asesor del sistema). "
+                "Use el botón 📅 para seleccionar la fecha."
             ),
             bg=self.colores["fondo_main"],
             fg="#766b6d",
@@ -3138,47 +3338,34 @@ class DashboardSGC:
                     "SELECT id FROM usuarios WHERE username = ?",
                     (usuario,),
                 )
-                row = cur.fetchone()
-
-                if row:
-                    usuario_id = int(row[0])
-                else:
-                    if not pw:
-                        conn.close()
-                        aviso(
-                            "Contraseña requerida",
-                            "Al crear un usuario nuevo debe indicar una contraseña.",
-                        )
-                        return
-
-                    pw_store = hash_password(pw)
-                    cur.execute(
-                        """
-                        INSERT INTO usuarios (username, password_hash, rol)
-                        VALUES (?, ?, ?)
-                        """,
-                        (usuario, pw_store, "Asesor"),
-                    )
-                    ultimo_id = cur.lastrowid
-                    if ultimo_id is None:
-                        raise RuntimeError("No se pudo obtener el ID del usuario creado.")
-                    usuario_id = int(ultimo_id)
-
-                cur.execute(
-                    """
-                    SELECT id
-                    FROM asesores
-                    WHERE usuario_id = ?
-                    """,
-                    (usuario_id,),
-                )
                 if cur.fetchone():
                     conn.close()
                     aviso(
-                        "Usuario ya vinculado",
-                        "Ese usuario ya tiene un perfil de asesor asociado.",
+                        "Usuario existente",
+                        "Ese nombre de usuario ya existe. Use otro nombre para el nuevo asesor.",
                     )
                     return
+
+                if not pw:
+                    conn.close()
+                    aviso(
+                        "Contraseña requerida",
+                        "Debe indicar una contraseña para el nuevo usuario asesor.",
+                    )
+                    return
+
+                pw_store = hash_password(pw)
+                cur.execute(
+                    """
+                    INSERT INTO usuarios (username, password_hash, rol)
+                    VALUES (?, ?, ?)
+                    """,
+                    (usuario, pw_store, "Usuario"),
+                )
+                ultimo_id = cur.lastrowid
+                if ultimo_id is None:
+                    raise RuntimeError("No se pudo obtener el ID del usuario creado.")
+                usuario_id = int(ultimo_id)
 
                 cur.execute(
                     """
@@ -3276,19 +3463,25 @@ class DashboardSGC:
             return
 
         vals = self.tabla_asesores.item(sel[0], "values")
-        asesor_id = vals[0]
+        usuario_id = vals[0]
 
         try:
             conn = obtener_conexion()
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT nombre, correo, telefono, especialidad,
-                       fecha_contratacion, salario
-                FROM asesores
-                WHERE id = ?
+                SELECT
+                    COALESCE(a.nombre, u.username),
+                    COALESCE(a.correo, ''),
+                    COALESCE(a.telefono, ''),
+                    COALESCE(a.especialidad, ''),
+                    COALESCE(a.fecha_contratacion, ''),
+                    COALESCE(a.salario, 0)
+                FROM usuarios u
+                LEFT JOIN asesores a ON a.usuario_id = u.id
+                WHERE u.id = ? AND LOWER(TRIM(u.rol)) <> 'administrador'
                 """,
-                (asesor_id,),
+                (usuario_id,),
             )
             row = cur.fetchone()
             conn.close()
@@ -3311,7 +3504,7 @@ class DashboardSGC:
 
         modal, cuerpo = self._crear_modal_corporativo(
             "Editar asesor",
-            f"Perfil interno #{asesor_id}",
+            f"Usuario interno #{usuario_id}",
             ancho=680,
             alto=610,
             icono="✎",
@@ -3352,12 +3545,18 @@ class DashboardSGC:
 
         etiqueta("Teléfono", 2)
         ent_tel = entrada(2, row[2] or "")
+        self._configurar_entrada_telefono(ent_tel)
 
         etiqueta("Especialidad", 3)
         ent_esp = entrada(3, row[3] or "")
 
         etiqueta("Fecha de contratación", 4)
         ent_fecha = entrada(4, row[4] or "")
+        tk.Button(
+            form, text="📅", width=3, relief="flat",
+            bg=self.colores["botones_menu"], fg=self.colores["oro"],
+            command=lambda: self._abrir_selector_fecha(ent_fecha, "Fecha de contratación")
+        ).grid(row=4, column=2, padx=(6, 0))
 
         etiqueta("Salario mensual", 5)
         ent_salario = entrada(5, row[5] if row[5] is not None else "")
@@ -3455,28 +3654,54 @@ class DashboardSGC:
                 cur = conn.cursor()
                 cur.execute(
                     """
-                    UPDATE asesores
-                    SET nombre = ?, correo = ?, telefono = ?,
-                        especialidad = ?, fecha_contratacion = ?, salario = ?
-                    WHERE id = ?
+                    SELECT id FROM asesores WHERE usuario_id = ?
                     """,
-                    (
-                        nombre,
-                        correo,
-                        tel,
-                        esp,
-                        fecha_contratacion,
-                        salario,
-                        asesor_id,
-                    ),
+                    (usuario_id,),
                 )
+                perfil = cur.fetchone()
+                if perfil:
+                    cur.execute(
+                        """
+                        UPDATE asesores
+                        SET nombre = ?, correo = ?, telefono = ?,
+                            especialidad = ?, fecha_contratacion = ?, salario = ?
+                        WHERE usuario_id = ?
+                        """,
+                        (
+                            nombre,
+                            correo,
+                            tel,
+                            esp,
+                            fecha_contratacion,
+                            salario,
+                            usuario_id,
+                        ),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO asesores (
+                            usuario_id, nombre, correo, telefono,
+                            especialidad, fecha_contratacion, salario
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            usuario_id,
+                            nombre,
+                            correo,
+                            tel,
+                            esp,
+                            fecha_contratacion,
+                            salario,
+                        ),
+                    )
                 conn.commit()
                 conn.close()
 
                 registrar_accion(
                     getattr(self, "usuario_autenticado", "Sistema"),
                     "EDITÓ ASESOR",
-                    f"Actualizó el perfil #{asesor_id} de {nombre}.",
+                    f"Actualizó el usuario asesor #{usuario_id} de {nombre}.",
                 )
 
                 modal.destroy()
@@ -3542,18 +3767,18 @@ class DashboardSGC:
             return
 
         vals = self.tabla_asesores.item(sel[0], "values")
-        asesor_id = vals[0]
+        usuario_id = vals[0]
         usuario = vals[1] if len(vals) > 1 else "—"
-        nombre = vals[2] if len(vals) > 2 else f"Asesor #{asesor_id}"
+        nombre = vals[2] if len(vals) > 2 else f"Asesor #{usuario_id}"
 
         if not self._confirmar_corporativo(
             "Eliminar asesor",
             f"¿Desea eliminar el perfil de {nombre}?",
             detalle=(
-                f"ID interno: {asesor_id}\n"
+                f"ID interno: {usuario_id}\n"
                 f"Usuario vinculado: {usuario}\n\n"
-                "Se eliminará el perfil de asesor. La cuenta de usuario "
-                "vinculada se conservará."
+                "Se eliminarán el perfil de asesor y la cuenta de usuario "
+                "vinculada al sistema."
             ),
             texto_confirmar="Eliminar asesor",
             peligro=True,
@@ -3564,23 +3789,29 @@ class DashboardSGC:
             conn = obtener_conexion()
             cur = conn.cursor()
             cur.execute(
-                "DELETE FROM asesores WHERE id = ?",
-                (asesor_id,),
+                "DELETE FROM asesores WHERE usuario_id = ?",
+                (usuario_id,),
             )
+            cur.execute(
+                "DELETE FROM usuarios WHERE id = ? AND LOWER(TRIM(rol)) <> 'administrador'",
+                (usuario_id,),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError("No se pudo eliminar la cuenta de usuario seleccionada.")
             conn.commit()
             conn.close()
 
             registrar_accion(
                 getattr(self, "usuario_autenticado", "Sistema"),
                 "ELIMINÓ ASESOR",
-                f"Eliminó el perfil #{asesor_id} de {nombre}.",
+                f"Eliminó el usuario asesor #{usuario_id} de {nombre} ({usuario}).",
             )
 
             self.actualizar_tabla_asesores()
 
             self._mensaje_corporativo(
                 "Asesor eliminado",
-                f"El perfil de {nombre} fue eliminado correctamente.",
+                f"{nombre} y su cuenta de usuario fueron eliminados correctamente.",
                 tipo="exito",
             )
 
@@ -3707,6 +3938,7 @@ class DashboardSGC:
 
         etiqueta("Teléfono", 3)
         entry_tel = entrada(3)
+        self._configurar_entrada_telefono(entry_tel)
 
         etiqueta("Persona de contacto", 4)
         entry_per_con = entrada(4)
@@ -3760,6 +3992,14 @@ class DashboardSGC:
                 self._mensaje_corporativo(
                     "Falta información",
                     "Seleccione el servicio solicitado.",
+                    tipo="advertencia",
+                )
+                return
+
+            if tel != "No registrado" and (not tel.isdigit() or len(tel) != 11):
+                self._mensaje_corporativo(
+                    "Teléfono inválido",
+                    "El teléfono debe contener exactamente 11 dígitos numéricos.",
                     tipo="advertencia",
                 )
                 return
@@ -3972,6 +4212,7 @@ class DashboardSGC:
 
         etiqueta("Teléfono", 3)
         entry_tel = entrada(3, telefono_act)
+        self._configurar_entrada_telefono(entry_tel)
 
         etiqueta("Persona de contacto", 4)
         entry_per_con = entrada(4, per_con_act)
@@ -4013,6 +4254,14 @@ class DashboardSGC:
                 self._mensaje_corporativo(
                     "Falta información",
                     "El nombre del cliente es obligatorio.",
+                    tipo="advertencia",
+                )
+                return
+
+            if tel != "No registrado" and (not tel.isdigit() or len(tel) != 11):
+                self._mensaje_corporativo(
+                    "Teléfono inválido",
+                    "El teléfono debe contener exactamente 11 dígitos numéricos.",
                     tipo="advertencia",
                 )
                 return
